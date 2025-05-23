@@ -294,16 +294,19 @@
 
 
     <script type="module">
-        // Configuración de Firebase (reemplazar con tus datos)
-        // Estas variables __firebase_config, __app_id, __initial_auth_token serán inyectadas por el entorno Canvas
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "TU_API_KEY", // Reemplazar si no estás en Canvas
-            authDomain: "TU_AUTH_DOMAIN",
-            projectId: "TU_PROJECT_ID",
-            storageBucket: "TU_STORAGE_BUCKET",
-            messagingSenderId: "TU_MESSAGING_SENDER_ID",
-            appId: "TU_APP_ID"
+        // Configuración de Firebase con TUS VALORES REALES
+        const firebaseConfig = {
+            apiKey: "AIzaSyAkRMFo_f-oXL5Oe5kSRxflz6dsTpqC8Sc",
+            authDomain: "inventario-d63bd.firebaseapp.com",
+            projectId: "inventario-d63bd",
+            storageBucket: "inventario-d63bd.appspot.com", // Corregido a .appspot.com si es el estándar, o dejar .firebasestorage.app si así te lo dio Firebase específicamente.
+            messagingSenderId: "555490589088",
+            appId: "1:555490589088:web:efbd23e899abfe3fd94cc5",
+            measurementId: "G-LVQ3TV0KWV" // Opcional
         };
+        
+        // Esta variable appId es para la estructura de carpetas en Firestore y es diferente del appId de Firebase config.
+        // Para GitHub Pages, __app_id será undefined, entonces usará 'default-app-id'.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         
         // Importaciones de Firebase
@@ -327,7 +330,7 @@
             query, 
             writeBatch,
             runTransaction,
-            where // Asegúrate de importar where si lo usas para queries más complejas
+            where
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Inicialización de Firebase
@@ -339,7 +342,7 @@
         let currentEditingProductId = null;
         let inventoryQrScanner = null;
         let saleQrScanner = null;
-        let currentSaleItems = []; // Para la venta actual
+        let currentSaleItems = []; 
 
         // --- Autenticación ---
         onAuthStateChanged(auth, async (user) => {
@@ -351,6 +354,8 @@
             } else {
                 console.log("Usuario no autenticado, intentando inicio anónimo o con token.");
                 try {
+                    // Para GitHub Pages, __initial_auth_token no existirá.
+                    // Se intentará signInAnonymously.
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                         await signInWithCustomToken(auth, __initial_auth_token);
                         console.log("Signed in with custom token.");
@@ -358,10 +363,10 @@
                         await signInAnonymously(auth);
                         console.log("Signed in anonymously.");
                     }
-                    // onAuthStateChanged se disparará de nuevo después del inicio de sesión exitoso
                 } catch (error) {
                     console.error("Error en el inicio de sesión:", error);
                     document.getElementById('userIdDisplay').textContent = "Error de autenticación";
+                    showToast("Error de autenticación con Firebase. Revisa la configuración y los dominios autorizados.", "error");
                 }
             }
         });
@@ -371,12 +376,12 @@
             const toast = document.getElementById('toast');
             const toastMessage = document.getElementById('toastMessage');
             toastMessage.textContent = message;
-            toast.classList.remove('opacity-0', 'bg-red-500', 'bg-green-500', 'bg-blue-500'); // Limpiar clases previas
+            toast.classList.remove('opacity-0', 'bg-red-500', 'bg-green-500', 'bg-blue-500');
             if (type === 'error') {
                 toast.classList.add('bg-red-500');
             } else if (type === 'info') {
                 toast.classList.add('bg-blue-500');
-            } else { // success
+            } else { 
                 toast.classList.add('bg-green-600');
             }
             toast.classList.add('opacity-100');
@@ -404,7 +409,6 @@
                         pane.classList.add('hidden');
                     }
                 });
-                // Detener escáneres si están activos y se cambia de pestaña
                 stopAllScanners();
             });
         });
@@ -462,7 +466,6 @@
                 await addDoc(storesCol, { name: storeName });
                 showToast("Tienda añadida con éxito.");
                 closeModal('storeModal');
-                // No es necesario llamar a loadStores aquí si onSnapshot está activo
             } catch (error) {
                 console.error("Error añadiendo tienda:", error);
                 showToast("Error al añadir tienda: " + error.message, "error");
@@ -490,8 +493,8 @@
                 option.textContent = store.name;
                 saleStoreSelect.appendChild(option);
             });
-            if (typeof lucide !== 'undefined') { // Verificar si lucide está definido
-                lucide.createIcons(); // Para renderizar iconos añadidos dinámicamente
+            if (typeof lucide !== 'undefined') { 
+                lucide.createIcons(); 
             }
 
 
@@ -518,7 +521,7 @@
         // --- Gestión de Productos ---
         const productModal = document.getElementById('productModal');
         const productForm = document.getElementById('productForm');
-        const productList = document.getElementById('productList');
+        const productListElement = document.getElementById('productList'); // Renombrado para evitar conflicto con variable 'productList' si se declara después
         const searchProductQRInput = document.getElementById('searchProductQR');
 
         document.getElementById('openAddProductModal').addEventListener('click', () => {
@@ -535,8 +538,8 @@
             if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
 
             let productQR = document.getElementById('productQR').value.trim();
-            if (!productQR && !currentEditingProductId) { // Solo autogenerar para nuevos productos si está vacío
-                productQR = crypto.randomUUID(); // Generar ID único si está vacío
+            if (!productQR && !currentEditingProductId) { 
+                productQR = crypto.randomUUID(); 
             }
             
             const productData = {
@@ -553,16 +556,16 @@
             }
             if (productData.costPrice > productData.salePrice) {
                 showToast("El precio de costo no puede ser mayor al precio de venta.", "error");
-                 return; // Detener si hay error
+                 return; 
             }
 
             try {
                 const productsCol = collection(db, 'artifacts', appId, 'users', userId, 'products');
-                if (currentEditingProductId) { // Editar producto existente
+                if (currentEditingProductId) { 
                     const productDoc = doc(db, 'artifacts', appId, 'users', userId, 'products', currentEditingProductId);
                     await setDoc(productDoc, productData, { merge: true }); 
                     showToast("Producto actualizado con éxito.");
-                } else { // Añadir nuevo producto
+                } else { 
                     if (!productQR) {
                          showToast("El código QR/ID es obligatorio para nuevos productos.", "error"); return;
                     }
@@ -591,10 +594,10 @@
         }
 
         function renderProducts(products) {
-            productList.innerHTML = '';
+            productListElement.innerHTML = ''; // Usar la variable renombrada
             if (products.length === 0) {
-                productList.innerHTML = '<tr><td colspan="8" class="text-center py-4">No hay productos en el inventario.</td></tr>';
-                calculateFinancials(); // Asegurar que los financieros se actualicen incluso si no hay productos
+                productListElement.innerHTML = '<tr><td colspan="8" class="text-center py-4">No hay productos en el inventario.</td></tr>';
+                calculateFinancials(); 
                 return;
             }
             products.forEach(product => {
@@ -621,7 +624,7 @@
                         <button data-id="${product.id}" class="delete-product-btn text-red-600 hover:text-red-900" title="Eliminar"><i data-lucide="trash-2" class="inline-block"></i></button>
                     </td>
                 `;
-                productList.appendChild(tr);
+                productListElement.appendChild(tr); // Usar la variable renombrada
 
                 const canvas = tr.querySelector('.product-qr-canvas');
                 if (canvas) {
@@ -713,18 +716,16 @@
         });
 
         function filterProducts(searchTerm) {
-            const rows = productList.querySelectorAll('tr');
+            const rows = productListElement.querySelectorAll('tr'); // Usar la variable renombrada
             rows.forEach(row => {
                 const firstCell = row.cells[0];
-                // Manejar la fila "No hay productos..."
                 if (firstCell && firstCell.getAttribute('colspan') === '8') {
-                    row.style.display = searchTerm ? 'none' : ''; // Ocultar si hay término de búsqueda, mostrar si no
+                    row.style.display = searchTerm ? 'none' : ''; 
                     return;
                 }
 
-                // Para filas de productos normales, asegurarse de que tengan suficientes celdas
-                if (row.cells.length < 2) { // Si no es una fila de producto válida
-                    row.style.display = 'none'; // Ocultar por defecto
+                if (row.cells.length < 2) { 
+                    row.style.display = 'none'; 
                     return;
                 }
                 
@@ -760,9 +761,9 @@
             if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
             try {
                 const storesCol = collection(db, 'artifacts', appId, 'users', userId, 'stores');
-                const snapshot = await getDocs(storesCol); // Usar await para getDocs
+                const snapshot = await getDocs(storesCol); 
                 const storesData = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                const saleStoreSelectElement = document.getElementById('saleStore'); // Renombrar para evitar conflicto
+                const saleStoreSelectElement = document.getElementById('saleStore'); 
                 saleStoreSelectElement.innerHTML = '<option value="">Seleccione una tienda</option>';
                 storesData.forEach(store => {
                      const option = document.createElement('option');
@@ -971,12 +972,11 @@
 
             try {
                 await runTransaction(db, async (transaction) => {
-                    const productUpdates = []; // Para almacenar referencias y nuevas cantidades
+                    const productUpdates = []; 
 
-                    // Fase 1: Todas las LECTURAS y validación
                     for (const item of saleData.items) {
                         const productRef = doc(db, 'artifacts', appId, 'users', userId, 'products', item.productId);
-                        const productDoc = await transaction.get(productRef); // LECTURA
+                        const productDoc = await transaction.get(productRef); 
                         if (!productDoc.exists()) {
                             throw new Error(`Producto ${item.productName} (${item.productId}) no encontrado.`);
                         }
@@ -988,15 +988,12 @@
                         productUpdates.push({ ref: productRef, newQuantity: newQuantity });
                     }
 
-                    // Fase 2: Todas las ESCRITURAS
-                    // 2a. Guardar la venta
                     const salesCol = collection(db, 'artifacts', appId, 'users', userId, 'sales');
-                    const newSaleRef = doc(salesCol); // Generar referencia para la nueva venta
-                    transaction.set(newSaleRef, saleData); // ESCRITURA
+                    const newSaleRef = doc(salesCol); 
+                    transaction.set(newSaleRef, saleData); 
 
-                    // 2b. Actualizar stock de productos
                     for (const update of productUpdates) {
-                        transaction.update(update.ref, { quantity: update.newQuantity }); // ESCRITURA
+                        transaction.update(update.ref, { quantity: update.newQuantity }); 
                     }
                 });
 
@@ -1013,7 +1010,7 @@
             salesHistoryTable.innerHTML = '';
              if (sales.length === 0) {
                 salesHistoryTable.innerHTML = '<tr><td colspan="5" class="text-center py-4">No hay ventas registradas.</td></tr>';
-                calculateFinancials(); // Asegurar que los financieros se actualicen
+                calculateFinancials(); 
                 return;
             }
             sales.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1250,7 +1247,6 @@
         function loadInitialData() {
             if (!userId) return;
 
-            // Suscripción a Tiendas
             const storesCol = collection(db, 'artifacts', appId, 'users', userId, 'stores');
             onSnapshot(storesCol, (snapshot) => {
                 const storesData = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1260,7 +1256,6 @@
                 showToast("Error al cargar tiendas: " + error.message, "error");
             });
 
-            // Suscripción a Productos
             const productsCol = collection(db, 'artifacts', appId, 'users', userId, 'products');
             onSnapshot(productsCol, (snapshot) => {
                 allProductsCache = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1271,7 +1266,6 @@
                 showToast("Error al cargar productos: " + error.message, "error");
             });
             
-            // Suscripción a Ventas
             const salesCol = collection(db, 'artifacts', appId, 'users', userId, 'sales');
             onSnapshot(salesCol, (snapshot) => {
                 allSalesCache = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
