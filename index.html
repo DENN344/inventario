@@ -1,0 +1,1293 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-T">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Inventario y Ventas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .tab-button.active { border-color: #3b82f6; color: #3b82f6; background-color: #eff6ff; }
+        .modal { display: none; }
+        .modal.active { display: flex; }
+        .low-stock { background-color: #fef9c3 !important; color: #713f12; }
+        .out-of-stock { background-color: #fee2e2 !important; color: #991b1b; }
+        .in-stock { background-color: #dcfce7 !important; color: #166534; }
+        #qr-reader { width: 100%; max-width: 500px; border: 1px solid #ccc; }
+        #qr-reader__dashboard_section_csr button { background-color: #ef4444; color: white; padding: 8px; border-radius: 5px; margin-top: 10px;}
+        .product-search-results { max-height: 200px; overflow-y: auto; border: 1px solid #ccc; }
+        .product-search-item:hover { background-color: #f0f0f0; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+    <div class="container mx-auto p-4">
+        <header class="bg-blue-600 text-white p-6 rounded-lg shadow-lg mb-6">
+            <h1 class="text-3xl font-bold">Sistema de Control de Inventario y Ventas</h1>
+            <p class="text-sm">Usuario ID: <span id="userIdDisplay" class="font-mono">Cargando...</span></p>
+        </header>
+
+        <div class="mb-6 flex space-x-2 border-b border-gray-300">
+            <button class="tab-button py-2 px-4 font-semibold border-b-2 border-transparent hover:border-blue-500 hover:text-blue-500 focus:outline-none active" data-tab="dashboard">
+                <i data-lucide="layout-dashboard" class="inline-block mr-2"></i>Dashboard
+            </button>
+            <button class="tab-button py-2 px-4 font-semibold border-b-2 border-transparent hover:border-blue-500 hover:text-blue-500 focus:outline-none" data-tab="inventory">
+                <i data-lucide="package" class="inline-block mr-2"></i>Inventario
+            </button>
+            <button class="tab-button py-2 px-4 font-semibold border-b-2 border-transparent hover:border-blue-500 hover:text-blue-500 focus:outline-none" data-tab="sales">
+                <i data-lucide="shopping-cart" class="inline-block mr-2"></i>Ventas
+            </button>
+            <button class="tab-button py-2 px-4 font-semibold border-b-2 border-transparent hover:border-blue-500 hover:text-blue-500 focus:outline-none" data-tab="stores">
+                <i data-lucide="store" class="inline-block mr-2"></i>Tiendas
+            </button>
+            <button class="tab-button py-2 px-4 font-semibold border-b-2 border-transparent hover:border-blue-500 hover:text-blue-500 focus:outline-none" data-tab="importExport">
+                <i data-lucide="file-up" class="inline-block mr-2"></i>Importar/Exportar
+            </button>
+        </div>
+
+        <main id="tab-content">
+            <div id="dashboard-content" class="tab-pane active p-4 bg-white rounded-lg shadow">
+                <h2 class="text-2xl font-semibold mb-4">Resumen Financiero</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="bg-green-100 p-4 rounded-lg shadow">
+                        <h3 class="text-lg font-medium text-green-700">Valor Total del Inventario (Costo)</h3>
+                        <p id="totalInventoryValue" class="text-2xl font-bold text-green-800">Cargando...</p>
+                    </div>
+                    <div class="bg-yellow-100 p-4 rounded-lg shadow">
+                        <h3 class="text-lg font-medium text-yellow-700">Ganancia Bruta Total</h3>
+                        <p id="totalGrossProfit" class="text-2xl font-bold text-yellow-800">Cargando...</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="inventory-content" class="tab-pane hidden p-4 bg-white rounded-lg shadow">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-semibold">Gestión de Inventario</h2>
+                    <button id="openAddProductModal" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg flex items-center">
+                        <i data-lucide="plus-circle" class="mr-2"></i>Añadir Producto
+                    </button>
+                </div>
+                <div class="mb-4">
+                    <label for="searchProductQR" class="block text-sm font-medium text-gray-700">Buscar Producto por QR/Nombre:</label>
+                    <div class="flex">
+                        <input type="text" id="searchProductQR" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2" placeholder="Ingresar o escanear QR / Escribir nombre...">
+                        <button id="scanProductQRInventory" class="ml-2 bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-3 rounded-lg">
+                            <i data-lucide="scan-line"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="inventoryQRScannerContainer" class="mb-4 hidden">
+                    <div id="inventory-qr-reader" class="w-full md:w-1/2 mx-auto"></div>
+                    <button id="stopInventoryQRScan" class="mt-2 bg-red-500 hover:bg-red-600 text-white font-bold py-1 px-3 rounded-lg block mx-auto">Detener Escaneo</button>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">QR (ID)</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nombre</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cantidad</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P. Costo</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P. Venta</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock Mín.</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="productList" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="sales-content" class="tab-pane hidden p-4 bg-white rounded-lg shadow">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-semibold">Gestión de Ventas</h2>
+                    <button id="openRecordSaleModal" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg flex items-center">
+                        <i data-lucide="plus-circle" class="mr-2"></i>Registrar Venta
+                    </button>
+                </div>
+                <h3 class="text-xl font-semibold mb-2">Historial de Ventas</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tienda</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Productos</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Monto Total</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ganancia Bruta</th>
+                            </tr>
+                        </thead>
+                        <tbody id="salesHistory" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="stores-content" class="tab-pane hidden p-4 bg-white rounded-lg shadow">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-semibold">Gestión de Tiendas</h2>
+                    <button id="openAddStoreModal" class="bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-lg flex items-center">
+                        <i data-lucide="plus-circle" class="mr-2"></i>Añadir Tienda
+                    </button>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nombre de Tienda</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="storeList" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div id="importExport-content" class="tab-pane hidden p-4 bg-white rounded-lg shadow">
+                <h2 class="text-2xl font-semibold mb-4">Importar y Exportar Datos</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <h3 class="text-xl font-medium mb-2">Exportar Inventario</h3>
+                        <p class="text-sm text-gray-600 mb-2">Descarga tu inventario actual en formato Excel (.xlsx).</p>
+                        <button id="exportInventory" class="bg-teal-500 hover:bg-teal-600 text-white font-bold py-2 px-4 rounded-lg flex items-center">
+                            <i data-lucide="download" class="mr-2"></i>Exportar a Excel
+                        </button>
+                    </div>
+                    <div>
+                        <h3 class="text-xl font-medium mb-2">Importar Inventario</h3>
+                        <p class="text-sm text-gray-600 mb-2">Sube un archivo Excel (.xlsx) para añadir o actualizar productos. El archivo debe tener las columnas: QR_ID (opcional), Nombre, Cantidad, PrecioCosto, PrecioVenta, StockMinimo.</p>
+                        <input type="file" id="importFile" accept=".xlsx" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100 mb-2">
+                        <button id="importInventory" class="bg-teal-500 hover:bg-teal-600 text-white font-bold py-2 px-4 rounded-lg flex items-center">
+                            <i data-lucide="upload" class="mr-2"></i>Importar desde Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <div id="productModal" class="modal fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full items-center justify-center">
+        <div class="relative mx-auto p-5 border w-full max-w-lg shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <h3 class="text-lg leading-6 font-medium text-gray-900" id="productModalTitle">Añadir Producto</h3>
+                <form id="productForm" class="mt-2 space-y-4">
+                    <input type="hidden" id="productId">
+                    <div>
+                        <label for="productQR" class="block text-sm font-medium text-gray-700 text-left">Código QR (ID Único - dejar en blanco para autogenerar):</label>
+                        <input type="text" id="productQR" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                    </div>
+                    <div>
+                        <label for="productName" class="block text-sm font-medium text-gray-700 text-left">Nombre del Producto:</label>
+                        <input type="text" id="productName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                    </div>
+                    <div>
+                        <label for="productQuantity" class="block text-sm font-medium text-gray-700 text-left">Cantidad Actual:</label>
+                        <input type="number" id="productQuantity" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2" min="0">
+                    </div>
+                    <div>
+                        <label for="productCostPrice" class="block text-sm font-medium text-gray-700 text-left">Precio de Costo:</label>
+                        <input type="number" id="productCostPrice" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2" min="0" step="0.01">
+                    </div>
+                    <div>
+                        <label for="productSalePrice" class="block text-sm font-medium text-gray-700 text-left">Precio de Venta:</label>
+                        <input type="number" id="productSalePrice" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2" min="0" step="0.01">
+                    </div>
+                    <div>
+                        <label for="productMinStock" class="block text-sm font-medium text-gray-700 text-left">Nivel Mínimo de Stock:</label>
+                        <input type="number" id="productMinStock" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2" min="0" value="0">
+                    </div>
+                    <div class="items-center px-4 py-3">
+                        <button id="saveProductButton" type="submit" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">Guardar Producto</button>
+                        <button id="closeProductModal" type="button" class="mt-2 px-4 py-2 bg-gray-300 text-gray-800 text-base font-medium rounded-md w-full shadow-sm hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-300">Cancelar</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div id="viewQRModal" class="modal fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full items-center justify-center">
+        <div class="relative mx-auto p-5 border w-auto max-w-xs shadow-lg rounded-md bg-white">
+            <h3 class="text-lg leading-6 font-medium text-gray-900 text-center mb-4">Código QR del Producto</h3>
+            <canvas id="qrCanvas" class="mx-auto"></canvas>
+            <p id="qrCodeText" class="text-center font-mono mt-2"></p>
+            <button id="closeViewQRModal" type="button" class="mt-4 px-4 py-2 bg-gray-300 text-gray-800 text-base font-medium rounded-md w-full shadow-sm hover:bg-gray-400">Cerrar</button>
+        </div>
+    </div>
+
+    <div id="storeModal" class="modal fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full items-center justify-center">
+        <div class="relative mx-auto p-5 border w-full max-w-md shadow-lg rounded-md bg-white">
+            <h3 class="text-lg leading-6 font-medium text-gray-900 text-center">Añadir Nueva Tienda</h3>
+            <form id="storeForm" class="mt-4 space-y-4">
+                <div>
+                    <label for="storeName" class="block text-sm font-medium text-gray-700">Nombre de la Tienda:</label>
+                    <input type="text" id="storeName" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="saveStoreButton" type="submit" class="px-4 py-2 bg-purple-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-purple-600">Guardar Tienda</button>
+                    <button id="closeStoreModal" type="button" class="mt-2 px-4 py-2 bg-gray-300 text-gray-800 text-base font-medium rounded-md w-full shadow-sm hover:bg-gray-400">Cancelar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <div id="recordSaleModal" class="modal fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full items-center justify-center">
+        <div class="relative mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-md bg-white">
+            <h3 class="text-lg leading-6 font-medium text-gray-900 text-center mb-4">Registrar Nueva Venta</h3>
+            <form id="saleForm" class="space-y-4">
+                <div>
+                    <label for="saleStore" class="block text-sm font-medium text-gray-700">Seleccionar Tienda:</label>
+                    <select id="saleStore" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2">
+                        </select>
+                </div>
+
+                <div class="border p-3 rounded-md">
+                    <h4 class="text-md font-medium mb-2">Añadir Producto a la Venta:</h4>
+                    <div class="flex items-center space-x-2 mb-2">
+                        <input type="text" id="saleSearchProduct" class="block w-full rounded-md border-gray-300 shadow-sm p-2" placeholder="Buscar por nombre o escanear QR...">
+                        <button type="button" id="scanProductQRSale" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-3 rounded-lg">
+                            <i data-lucide="scan-line"></i>
+                        </button>
+                    </div>
+                    <div id="saleQRScannerContainer" class="mb-2 hidden">
+                         <div id="sale-qr-reader" class="w-full md:w-1/2 mx-auto"></div>
+                         <button id="stopSaleQRScan" class="mt-2 bg-red-500 hover:bg-red-600 text-white font-bold py-1 px-3 rounded-lg block mx-auto">Detener Escaneo</button>
+                    </div>
+                    <div id="saleProductSearchResults" class="product-search-results border rounded bg-white shadow"></div>
+                </div>
+
+                <div class="border p-3 rounded-md">
+                    <h4 class="text-md font-medium mb-2">Productos en esta Venta:</h4>
+                    <div id="saleItemsList" class="space-y-2 max-h-60 overflow-y-auto">
+                        </div>
+                    <p class="text-right font-bold mt-2">Total Venta: <span id="saleTotalAmount">0.00</span></p>
+                </div>
+
+                <div class="items-center px-4 py-3">
+                    <button id="saveSaleButton" type="submit" class="px-4 py-2 bg-green-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-green-600">Confirmar Venta</button>
+                    <button id="closeSaleModal" type="button" class="mt-2 px-4 py-2 bg-gray-300 text-gray-800 text-base font-medium rounded-md w-full shadow-sm hover:bg-gray-400">Cancelar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="confirmationModal" class="modal fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full items-center justify-center">
+        <div class="relative mx-auto p-5 border w-full max-w-sm shadow-lg rounded-md bg-white">
+            <h3 class="text-lg leading-6 font-medium text-gray-900" id="confirmationTitle">Confirmar Acción</h3>
+            <p id="confirmationMessage" class="mt-2 text-sm text-gray-600">¿Estás seguro?</p>
+            <div class="mt-4 flex justify-end space-x-2">
+                <button id="confirmActionButton" class="px-4 py-2 bg-red-500 text-white text-base font-medium rounded-md hover:bg-red-600">Confirmar</button>
+                <button id="cancelActionButton" class="px-4 py-2 bg-gray-300 text-gray-800 text-base font-medium rounded-md hover:bg-gray-400">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="fixed bottom-5 right-5 bg-gray-800 text-white py-3 px-5 rounded-lg shadow-lg transition-opacity duration-300 opacity-0 z-50">
+        <p id="toastMessage"></p>
+    </div>
+
+
+    <script type="module">
+        // Configuración de Firebase (reemplazar con tus datos)
+        // Estas variables __firebase_config, __app_id, __initial_auth_token serán inyectadas por el entorno Canvas
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "TU_API_KEY", // Reemplazar si no estás en Canvas
+            authDomain: "TU_AUTH_DOMAIN",
+            projectId: "TU_PROJECT_ID",
+            storageBucket: "TU_STORAGE_BUCKET",
+            messagingSenderId: "TU_MESSAGING_SENDER_ID",
+            appId: "TU_APP_ID"
+        };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        
+        // Importaciones de Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            onAuthStateChanged,
+            signInWithCustomToken
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            collection, 
+            doc, 
+            addDoc, 
+            setDoc, 
+            getDoc, 
+            getDocs, 
+            deleteDoc, 
+            onSnapshot, 
+            query, 
+            writeBatch,
+            runTransaction,
+            where // Asegúrate de importar where si lo usas para queries más complejas
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Inicialización de Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        let userId = null;
+        let currentEditingProductId = null;
+        let inventoryQrScanner = null;
+        let saleQrScanner = null;
+        let currentSaleItems = []; // Para la venta actual
+
+        // --- Autenticación ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                document.getElementById('userIdDisplay').textContent = userId;
+                console.log("Usuario autenticado:", userId);
+                loadInitialData();
+            } else {
+                console.log("Usuario no autenticado, intentando inicio anónimo o con token.");
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                        console.log("Signed in with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously.");
+                    }
+                    // onAuthStateChanged se disparará de nuevo después del inicio de sesión exitoso
+                } catch (error) {
+                    console.error("Error en el inicio de sesión:", error);
+                    document.getElementById('userIdDisplay').textContent = "Error de autenticación";
+                }
+            }
+        });
+
+        // --- Toast Notifications ---
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+            toastMessage.textContent = message;
+            toast.classList.remove('opacity-0', 'bg-red-500', 'bg-green-500', 'bg-blue-500'); // Limpiar clases previas
+            if (type === 'error') {
+                toast.classList.add('bg-red-500');
+            } else if (type === 'info') {
+                toast.classList.add('bg-blue-500');
+            } else { // success
+                toast.classList.add('bg-green-600');
+            }
+            toast.classList.add('opacity-100');
+            setTimeout(() => {
+                toast.classList.remove('opacity-100');
+                toast.classList.add('opacity-0');
+            }, 3000);
+        }
+        
+        // --- Navegación por Pestañas ---
+        const tabButtons = document.querySelectorAll('.tab-button');
+        const tabPanes = document.querySelectorAll('.tab-pane');
+
+        tabButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                tabButtons.forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+                const tab = button.getAttribute('data-tab');
+                tabPanes.forEach(pane => {
+                    if (pane.id === `${tab}-content`) {
+                        pane.classList.remove('hidden');
+                        pane.classList.add('active');
+                    } else {
+                        pane.classList.remove('active');
+                        pane.classList.add('hidden');
+                    }
+                });
+                // Detener escáneres si están activos y se cambia de pestaña
+                stopAllScanners();
+            });
+        });
+
+        // --- Funciones de Ayuda para Modales ---
+        function openModal(modalId) {
+            document.getElementById(modalId).classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+        
+        // --- Modal de Confirmación ---
+        const confirmationModal = document.getElementById('confirmationModal');
+        const confirmActionButton = document.getElementById('confirmActionButton');
+        const cancelActionButton = document.getElementById('cancelActionButton');
+        let currentConfirmAction = null;
+
+        function showConfirmationModal(title, message, onConfirm) {
+            document.getElementById('confirmationTitle').textContent = title;
+            document.getElementById('confirmationMessage').textContent = message;
+            currentConfirmAction = onConfirm;
+            openModal('confirmationModal');
+        }
+
+        confirmActionButton.addEventListener('click', () => {
+            if (currentConfirmAction) {
+                currentConfirmAction();
+            }
+            closeModal('confirmationModal');
+        });
+        cancelActionButton.addEventListener('click', () => closeModal('confirmationModal'));
+
+        // --- Gestión de Tiendas ---
+        const storeModal = document.getElementById('storeModal');
+        const storeForm = document.getElementById('storeForm');
+        const storeList = document.getElementById('storeList');
+        const saleStoreSelect = document.getElementById('saleStore');
+
+        document.getElementById('openAddStoreModal').addEventListener('click', () => {
+            storeForm.reset();
+            openModal('storeModal');
+        });
+        document.getElementById('closeStoreModal').addEventListener('click', () => closeModal('storeModal'));
+
+        storeForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+            const storeName = document.getElementById('storeName').value.trim();
+            if (!storeName) { showToast("El nombre de la tienda es obligatorio.", "error"); return; }
+
+            try {
+                const storesCol = collection(db, 'artifacts', appId, 'users', userId, 'stores');
+                await addDoc(storesCol, { name: storeName });
+                showToast("Tienda añadida con éxito.");
+                closeModal('storeModal');
+                // No es necesario llamar a loadStores aquí si onSnapshot está activo
+            } catch (error) {
+                console.error("Error añadiendo tienda:", error);
+                showToast("Error al añadir tienda: " + error.message, "error");
+            }
+        });
+
+        function renderStores(stores) {
+            storeList.innerHTML = '';
+            saleStoreSelect.innerHTML = '<option value="">Seleccione una tienda</option>';
+            if (stores.length === 0) {
+                storeList.innerHTML = '<tr><td colspan="2" class="text-center py-4">No hay tiendas registradas.</td></tr>';
+            }
+            stores.forEach(store => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap">${store.name}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <button data-id="${store.id}" class="delete-store-btn text-red-600 hover:text-red-900"><i data-lucide="trash-2" class="inline-block"></i> Eliminar</button>
+                    </td>
+                `;
+                storeList.appendChild(tr);
+
+                const option = document.createElement('option');
+                option.value = store.id;
+                option.textContent = store.name;
+                saleStoreSelect.appendChild(option);
+            });
+            if (typeof lucide !== 'undefined') { // Verificar si lucide está definido
+                lucide.createIcons(); // Para renderizar iconos añadidos dinámicamente
+            }
+
+
+            document.querySelectorAll('.delete-store-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const storeIdToDelete = e.currentTarget.getAttribute('data-id');
+                    showConfirmationModal('Eliminar Tienda', '¿Estás seguro de que quieres eliminar esta tienda? Esta acción no se puede deshacer.', () => deleteStore(storeIdToDelete));
+                });
+            });
+        }
+
+        async function deleteStore(storeId) {
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+            try {
+                const storeDoc = doc(db, 'artifacts', appId, 'users', userId, 'stores', storeId);
+                await deleteDoc(storeDoc);
+                showToast("Tienda eliminada con éxito.");
+            } catch (error) {
+                console.error("Error eliminando tienda:", error);
+                showToast("Error al eliminar tienda: " + error.message, "error");
+            }
+        }
+
+        // --- Gestión de Productos ---
+        const productModal = document.getElementById('productModal');
+        const productForm = document.getElementById('productForm');
+        const productList = document.getElementById('productList');
+        const searchProductQRInput = document.getElementById('searchProductQR');
+
+        document.getElementById('openAddProductModal').addEventListener('click', () => {
+            productForm.reset();
+            currentEditingProductId = null;
+            document.getElementById('productModalTitle').textContent = 'Añadir Producto';
+            document.getElementById('productQR').disabled = false;
+            openModal('productModal');
+        });
+        document.getElementById('closeProductModal').addEventListener('click', () => closeModal('productModal'));
+
+        productForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+
+            let productQR = document.getElementById('productQR').value.trim();
+            if (!productQR && !currentEditingProductId) { // Solo autogenerar para nuevos productos si está vacío
+                productQR = crypto.randomUUID(); // Generar ID único si está vacío
+            }
+            
+            const productData = {
+                name: document.getElementById('productName').value.trim(),
+                quantity: parseInt(document.getElementById('productQuantity').value),
+                costPrice: parseFloat(document.getElementById('productCostPrice').value),
+                salePrice: parseFloat(document.getElementById('productSalePrice').value),
+                minStock: parseInt(document.getElementById('productMinStock').value) || 0,
+            };
+
+            if (!productData.name || isNaN(productData.quantity) || isNaN(productData.costPrice) || isNaN(productData.salePrice)) {
+                showToast("Por favor, completa todos los campos obligatorios correctamente.", "error");
+                return;
+            }
+            if (productData.costPrice > productData.salePrice) {
+                showToast("El precio de costo no puede ser mayor al precio de venta.", "error");
+                 return; // Detener si hay error
+            }
+
+            try {
+                const productsCol = collection(db, 'artifacts', appId, 'users', userId, 'products');
+                if (currentEditingProductId) { // Editar producto existente
+                    const productDoc = doc(db, 'artifacts', appId, 'users', userId, 'products', currentEditingProductId);
+                    await setDoc(productDoc, productData, { merge: true }); 
+                    showToast("Producto actualizado con éxito.");
+                } else { // Añadir nuevo producto
+                    if (!productQR) {
+                         showToast("El código QR/ID es obligatorio para nuevos productos.", "error"); return;
+                    }
+                    const existingProductDoc = doc(db, 'artifacts', appId, 'users', userId, 'products', productQR);
+                    const docSnap = await getDoc(existingProductDoc);
+                    if (docSnap.exists()) {
+                        showToast("Error: Ya existe un producto con este Código QR/ID.", "error");
+                        return;
+                    }
+                    await setDoc(doc(productsCol, productQR), productData);
+                    showToast("Producto añadido con éxito.");
+                }
+                closeModal('productModal');
+                productForm.reset();
+                currentEditingProductId = null;
+            } catch (error) {
+                console.error("Error guardando producto:", error);
+                showToast("Error al guardar producto: " + error.message, "error");
+            }
+        });
+        
+        function getStockStatus(quantity, minStock) {
+            if (quantity <= 0) return { text: "Agotado", class: "out-of-stock" };
+            if (quantity <= minStock) return { text: "Stock Bajo", class: "low-stock" };
+            return { text: "En Stock", class: "in-stock" };
+        }
+
+        function renderProducts(products) {
+            productList.innerHTML = '';
+            if (products.length === 0) {
+                productList.innerHTML = '<tr><td colspan="8" class="text-center py-4">No hay productos en el inventario.</td></tr>';
+                calculateFinancials(); // Asegurar que los financieros se actualicen incluso si no hay productos
+                return;
+            }
+            products.forEach(product => {
+                const stockStatus = getStockStatus(product.quantity, product.minStock);
+                const tr = document.createElement('tr');
+                tr.classList.add(stockStatus.class.split(' ')[0]); 
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <canvas class="product-qr-canvas inline-block" data-qr="${product.id}" width="40" height="40"></canvas>
+                        <span class="text-xs block">${product.id}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">${product.name}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${product.quantity}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${product.costPrice.toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${product.salePrice.toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${product.minStock}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${stockStatus.class}">${stockStatus.text}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <button data-id="${product.id}" class="view-qr-btn text-blue-600 hover:text-blue-900 mr-2" title="Ver QR"><i data-lucide="qr-code" class="inline-block"></i></button>
+                        <button data-id="${product.id}" class="edit-product-btn text-indigo-600 hover:text-indigo-900 mr-2" title="Editar"><i data-lucide="edit" class="inline-block"></i></button>
+                        <button data-id="${product.id}" class="delete-product-btn text-red-600 hover:text-red-900" title="Eliminar"><i data-lucide="trash-2" class="inline-block"></i></button>
+                    </td>
+                `;
+                productList.appendChild(tr);
+
+                const canvas = tr.querySelector('.product-qr-canvas');
+                if (canvas) {
+                    new QRious({
+                        element: canvas,
+                        value: product.id,
+                        size: 40,
+                        level: 'H'
+                    });
+                }
+            });
+            
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+
+
+            document.querySelectorAll('.edit-product-btn').forEach(button => {
+                button.addEventListener('click', (e) => loadProductForEdit(e.currentTarget.getAttribute('data-id')));
+            });
+            document.querySelectorAll('.delete-product-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                     const productIdToDelete = e.currentTarget.getAttribute('data-id');
+                     const productName = products.find(p => p.id === productIdToDelete)?.name || productIdToDelete;
+                     showConfirmationModal('Eliminar Producto', `¿Estás seguro de que quieres eliminar el producto "${productName}"? Esta acción no se puede deshacer.`, () => deleteProduct(productIdToDelete));
+                });
+            });
+            document.querySelectorAll('.view-qr-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const qrValue = e.currentTarget.getAttribute('data-id');
+                    const qrCanvas = document.getElementById('qrCanvas');
+                    document.getElementById('qrCodeText').textContent = qrValue;
+                     new QRious({
+                        element: qrCanvas,
+                        value: qrValue,
+                        size: 200,
+                        level: 'H'
+                    });
+                    openModal('viewQRModal');
+                });
+            });
+            calculateFinancials(); 
+        }
+        document.getElementById('closeViewQRModal').addEventListener('click', () => closeModal('viewQRModal'));
+
+
+        async function loadProductForEdit(productId) {
+            if (!userId) return;
+            try {
+                const productDocRef = doc(db, 'artifacts', appId, 'users', userId, 'products', productId);
+                const docSnap = await getDoc(productDocRef);
+                if (docSnap.exists()) {
+                    const product = docSnap.data();
+                    currentEditingProductId = productId;
+                    document.getElementById('productModalTitle').textContent = 'Editar Producto';
+                    document.getElementById('productId').value = productId;
+                    document.getElementById('productQR').value = productId; 
+                    document.getElementById('productQR').disabled = true; 
+                    document.getElementById('productName').value = product.name;
+                    document.getElementById('productQuantity').value = product.quantity;
+                    document.getElementById('productCostPrice').value = product.costPrice;
+                    document.getElementById('productSalePrice').value = product.salePrice;
+                    document.getElementById('productMinStock').value = product.minStock;
+                    openModal('productModal');
+                } else {
+                    showToast("Producto no encontrado.", "error");
+                }
+            } catch (error) {
+                console.error("Error cargando producto para editar:", error);
+                showToast("Error al cargar producto: " + error.message, "error");
+            }
+        }
+
+        async function deleteProduct(productId) {
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+            try {
+                const productDoc = doc(db, 'artifacts', appId, 'users', userId, 'products', productId);
+                await deleteDoc(productDoc);
+                showToast("Producto eliminado con éxito.");
+            } catch (error) {
+                console.error("Error eliminando producto:", error);
+                showToast("Error al eliminar producto: " + error.message, "error");
+            }
+        }
+        
+        searchProductQRInput.addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase().trim();
+            filterProducts(searchTerm);
+        });
+
+        function filterProducts(searchTerm) {
+            const rows = productList.querySelectorAll('tr');
+            rows.forEach(row => {
+                const firstCell = row.cells[0];
+                // Manejar la fila "No hay productos..."
+                if (firstCell && firstCell.getAttribute('colspan') === '8') {
+                    row.style.display = searchTerm ? 'none' : ''; // Ocultar si hay término de búsqueda, mostrar si no
+                    return;
+                }
+
+                // Para filas de productos normales, asegurarse de que tengan suficientes celdas
+                if (row.cells.length < 2) { // Si no es una fila de producto válida
+                    row.style.display = 'none'; // Ocultar por defecto
+                    return;
+                }
+                
+                const qrIdText = row.cells[0] && row.cells[0].textContent ? row.cells[0].textContent.toLowerCase().trim() : '';
+                const nameText = row.cells[1] && row.cells[1].textContent ? row.cells[1].textContent.toLowerCase().trim() : '';
+
+                if (qrIdText.includes(searchTerm) || nameText.includes(searchTerm)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        }
+
+
+        // --- Gestión de Ventas ---
+        const recordSaleModal = document.getElementById('recordSaleModal');
+        const saleForm = document.getElementById('saleForm');
+        const salesHistoryTable = document.getElementById('salesHistory');
+        const saleSearchProductInput = document.getElementById('saleSearchProduct');
+        const saleProductSearchResultsDiv = document.getElementById('saleProductSearchResults');
+        const saleItemsListDiv = document.getElementById('saleItemsList');
+        const saleTotalAmountSpan = document.getElementById('saleTotalAmount');
+
+        document.getElementById('openRecordSaleModal').addEventListener('click', async () => {
+            saleForm.reset();
+            currentSaleItems = [];
+            updateSaleItemsList();
+            updateSaleTotal();
+            saleProductSearchResultsDiv.innerHTML = ''; 
+            saleSearchProductInput.value = ''; 
+            
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+            try {
+                const storesCol = collection(db, 'artifacts', appId, 'users', userId, 'stores');
+                const snapshot = await getDocs(storesCol); // Usar await para getDocs
+                const storesData = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                const saleStoreSelectElement = document.getElementById('saleStore'); // Renombrar para evitar conflicto
+                saleStoreSelectElement.innerHTML = '<option value="">Seleccione una tienda</option>';
+                storesData.forEach(store => {
+                     const option = document.createElement('option');
+                    option.value = store.id;
+                    option.textContent = store.name;
+                    saleStoreSelectElement.appendChild(option);
+                });
+            } catch (error) {
+                console.error("Error cargando tiendas para venta:", error);
+                showToast("Error al cargar tiendas: " + error.message, "error");
+            }
+            openModal('recordSaleModal');
+        });
+        document.getElementById('closeSaleModal').addEventListener('click', () => {
+            closeModal('recordSaleModal');
+            stopSaleQRScanner(); 
+        });
+
+        saleSearchProductInput.addEventListener('input', async (e) => {
+            const searchTerm = e.target.value.trim().toLowerCase();
+            if (searchTerm.length < 2) { 
+                saleProductSearchResultsDiv.innerHTML = '';
+                saleProductSearchResultsDiv.classList.add('hidden');
+                return;
+            }
+            if (!userId) return;
+
+            try {
+                const productsRef = collection(db, 'artifacts', appId, 'users', userId, 'products');
+                const q = query(productsRef, where('quantity', '>', 0)); 
+                const querySnapshot = await getDocs(q);
+                
+                const results = [];
+                querySnapshot.forEach(doc => {
+                    const product = { id: doc.id, ...doc.data() };
+                    if (product.name.toLowerCase().includes(searchTerm) || product.id.toLowerCase().includes(searchTerm)) {
+                        results.push(product);
+                    }
+                });
+
+                renderSaleProductSearchResults(results);
+            } catch (error) {
+                console.error("Error buscando productos para venta:", error);
+                saleProductSearchResultsDiv.innerHTML = '<p class="p-2 text-red-500">Error al buscar.</p>';
+                saleProductSearchResultsDiv.classList.remove('hidden');
+            }
+        });
+
+        function renderSaleProductSearchResults(products) {
+            saleProductSearchResultsDiv.innerHTML = '';
+            if (products.length === 0) {
+                saleProductSearchResultsDiv.innerHTML = '<p class="p-2 text-gray-500">No se encontraron productos.</p>';
+                saleProductSearchResultsDiv.classList.remove('hidden');
+                return;
+            }
+            products.forEach(product => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'p-2 border-b cursor-pointer product-search-item';
+                itemDiv.textContent = `${product.name} (Stock: ${product.quantity}, Precio: ${product.salePrice.toFixed(2)}) - ID: ${product.id}`;
+                itemDiv.addEventListener('click', () => addProductToSale(product));
+                saleProductSearchResultsDiv.appendChild(itemDiv);
+            });
+            saleProductSearchResultsDiv.classList.remove('hidden');
+        }
+        
+        function addProductToSale(product) {
+            if (product.quantity <= 0) {
+                showToast(`"${product.name}" está agotado.`, "error");
+                return;
+            }
+
+            const existingItem = currentSaleItems.find(item => item.productId === product.id);
+            if (existingItem) {
+                if (existingItem.quantity < product.quantity) {
+                    existingItem.quantity++;
+                } else {
+                    showToast(`No hay más stock disponible para "${product.name}".`, "warning");
+                }
+            } else {
+                currentSaleItems.push({
+                    productId: product.id,
+                    productName: product.name,
+                    quantity: 1,
+                    unitPrice: product.salePrice,
+                    costPrice: product.costPrice 
+                });
+            }
+            updateSaleItemsList();
+            updateSaleTotal();
+            saleSearchProductInput.value = ''; 
+            saleProductSearchResultsDiv.innerHTML = ''; 
+            saleProductSearchResultsDiv.classList.add('hidden');
+        }
+
+        function updateSaleItemsList() {
+            saleItemsListDiv.innerHTML = '';
+            if (currentSaleItems.length === 0) {
+                saleItemsListDiv.innerHTML = '<p class="text-gray-500">Aún no hay productos en esta venta.</p>';
+                return;
+            }
+            currentSaleItems.forEach((item, index) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'flex justify-between items-center p-2 border rounded';
+                itemDiv.innerHTML = `
+                    <div>
+                        <p class="font-medium">${item.productName}</p>
+                        <p class="text-sm text-gray-600">Precio: ${item.unitPrice.toFixed(2)} c/u</p>
+                    </div>
+                    <div class="flex items-center">
+                        <button type="button" data-index="${index}" class="decrease-qty-btn bg-gray-200 px-2 py-1 rounded-l hover:bg-gray-300">-</button>
+                        <span class="px-3">${item.quantity}</span>
+                        <button type="button" data-index="${index}" class="increase-qty-btn bg-gray-200 px-2 py-1 rounded-r hover:bg-gray-300">+</button>
+                        <button type="button" data-index="${index}" class="remove-item-btn text-red-500 hover:text-red-700 ml-3"><i data-lucide="trash-2" class="inline-block"></i></button>
+                    </div>
+                `;
+                saleItemsListDiv.appendChild(itemDiv);
+            });
+            if(typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+
+            document.querySelectorAll('.decrease-qty-btn').forEach(btn => btn.addEventListener('click', (e) => updateSaleItemQuantity(e.currentTarget.dataset.index, -1)));
+            document.querySelectorAll('.increase-qty-btn').forEach(btn => btn.addEventListener('click', (e) => updateSaleItemQuantity(e.currentTarget.dataset.index, 1)));
+            document.querySelectorAll('.remove-item-btn').forEach(btn => btn.addEventListener('click', (e) => removeSaleItem(e.currentTarget.dataset.index)));
+        }
+        
+        async function updateSaleItemQuantity(index, change) {
+            const item = currentSaleItems[index];
+            if (!item) return;
+
+            const newQuantity = item.quantity + change;
+
+            if (newQuantity <= 0) { 
+                removeSaleItem(index);
+                return;
+            }
+            
+            if (!userId) { return; }
+            const productDocRef = doc(db, 'artifacts', appId, 'users', userId, 'products', item.productId);
+            try {
+                const productSnap = await getDoc(productDocRef);
+                if (productSnap.exists()) {
+                    const productData = productSnap.data();
+                    if (newQuantity > productData.quantity) {
+                        showToast(`Stock insuficiente para "${item.productName}". Disponible: ${productData.quantity}.`, "warning");
+                        return; 
+                    }
+                    item.quantity = newQuantity;
+                } else {
+                    showToast(`Producto "${item.productName}" no encontrado en inventario.`, "error");
+                    removeSaleItem(index);
+                    return;
+                }
+            } catch(error) {
+                 showToast(`Error al verificar stock para "${item.productName}".`, "error");
+                 console.error("Error fetching product for stock check:", error);
+                 return;
+            }
+            
+            updateSaleItemsList();
+            updateSaleTotal();
+        }
+
+
+        function removeSaleItem(index) {
+            currentSaleItems.splice(index, 1);
+            updateSaleItemsList();
+            updateSaleTotal();
+        }
+
+        function updateSaleTotal() {
+            const total = currentSaleItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+            saleTotalAmountSpan.textContent = total.toFixed(2);
+        }
+
+        saleForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+            const saleStoreElement = document.getElementById('saleStore');
+            const storeId = saleStoreElement.value;
+            if (!storeId) {
+                showToast("Por favor, seleccione una tienda.", "error");
+                return;
+            }
+            if (currentSaleItems.length === 0) {
+                showToast("Añada al menos un producto a la venta.", "error");
+                return;
+            }
+
+            const saleData = {
+                storeId: storeId,
+                storeName: saleStoreElement.options[saleStoreElement.selectedIndex].text,
+                items: currentSaleItems.map(item => ({ 
+                    productId: item.productId,
+                    productName: item.productName,
+                    quantity: item.quantity,
+                    unitPrice: item.unitPrice,
+                    totalItemPrice: item.quantity * item.unitPrice,
+                    itemCost: item.costPrice, 
+                    itemProfit: (item.unitPrice - item.costPrice) * item.quantity 
+                })),
+                totalAmount: parseFloat(saleTotalAmountSpan.textContent),
+                totalProfit: currentSaleItems.reduce((sum, item) => sum + (item.unitPrice - item.costPrice) * item.quantity, 0),
+                date: new Date().toISOString()
+            };
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const productUpdates = []; // Para almacenar referencias y nuevas cantidades
+
+                    // Fase 1: Todas las LECTURAS y validación
+                    for (const item of saleData.items) {
+                        const productRef = doc(db, 'artifacts', appId, 'users', userId, 'products', item.productId);
+                        const productDoc = await transaction.get(productRef); // LECTURA
+                        if (!productDoc.exists()) {
+                            throw new Error(`Producto ${item.productName} (${item.productId}) no encontrado.`);
+                        }
+                        const currentQuantity = productDoc.data().quantity;
+                        const newQuantity = currentQuantity - item.quantity;
+                        if (newQuantity < 0) {
+                            throw new Error(`Stock insuficiente para ${item.productName}. Disponible: ${currentQuantity}, Solicitado: ${item.quantity}.`);
+                        }
+                        productUpdates.push({ ref: productRef, newQuantity: newQuantity });
+                    }
+
+                    // Fase 2: Todas las ESCRITURAS
+                    // 2a. Guardar la venta
+                    const salesCol = collection(db, 'artifacts', appId, 'users', userId, 'sales');
+                    const newSaleRef = doc(salesCol); // Generar referencia para la nueva venta
+                    transaction.set(newSaleRef, saleData); // ESCRITURA
+
+                    // 2b. Actualizar stock de productos
+                    for (const update of productUpdates) {
+                        transaction.update(update.ref, { quantity: update.newQuantity }); // ESCRITURA
+                    }
+                });
+
+                showToast("Venta registrada y stock actualizado con éxito.");
+                closeModal('recordSaleModal');
+                currentSaleItems = []; 
+            } catch (error) {
+                console.error("Error registrando venta:", error);
+                showToast("Error al registrar venta: " + error.message, "error");
+            }
+        });
+        
+        function renderSalesHistory(sales) {
+            salesHistoryTable.innerHTML = '';
+             if (sales.length === 0) {
+                salesHistoryTable.innerHTML = '<tr><td colspan="5" class="text-center py-4">No hay ventas registradas.</td></tr>';
+                calculateFinancials(); // Asegurar que los financieros se actualicen
+                return;
+            }
+            sales.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            sales.forEach(sale => {
+                const tr = document.createElement('tr');
+                const itemsSummary = sale.items.map(item => `${item.productName} (x${item.quantity})`).join(', ');
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap">${new Date(sale.date).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${sale.storeName || sale.storeId}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">${itemsSummary}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${sale.totalAmount.toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${sale.totalProfit.toFixed(2)}</td>
+                `;
+                salesHistoryTable.appendChild(tr);
+            });
+            calculateFinancials(); 
+        }
+
+        // --- QR Code Scanning ---
+        function onScanSuccess(decodedText, decodedResult, scannerInstance, context) {
+            console.log(`Code matched = ${decodedText}`, decodedResult);
+            if (context === 'inventory') {
+                searchProductQRInput.value = decodedText;
+                filterProducts(decodedText); 
+                stopInventoryQRScanner();
+            } else if (context === 'sale') {
+                saleSearchProductInput.value = decodedText;
+                const event = new Event('input', { bubbles: true, cancelable: true });
+                saleSearchProductInput.dispatchEvent(event);
+                stopSaleQRScanner();
+            }
+        }
+
+        function onScanFailure(error, scannerInstance) {
+            // console.warn(`Code scan error = ${error}`);
+        }
+
+        function startInventoryQRScanner() {
+            const qrReaderDiv = document.getElementById('inventory-qr-reader');
+            const container = document.getElementById('inventoryQRScannerContainer');
+            container.classList.remove('hidden');
+            qrReaderDiv.innerHTML = ''; 
+
+            if (!inventoryQrScanner) {
+                 inventoryQrScanner = new Html5Qrcode("inventory-qr-reader");
+            }
+           
+            inventoryQrScanner.start(
+                { facingMode: "environment" }, 
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                (decodedText, decodedResult) => onScanSuccess(decodedText, decodedResult, inventoryQrScanner, 'inventory'),
+                (errorMessage) => onScanFailure(errorMessage, inventoryQrScanner)
+            ).catch(err => {
+                console.error("Error iniciando escáner de inventario:", err);
+                showToast("Error al iniciar escáner QR: " + (err.message || err), "error");
+                container.classList.add('hidden');
+            });
+        }
+        
+        function stopInventoryQRScanner() {
+            const container = document.getElementById('inventoryQRScannerContainer');
+            if (inventoryQrScanner) { 
+                inventoryQrScanner.stop().then(() => {
+                    console.log("Escáner de inventario detenido.");
+                    container.classList.add('hidden');
+                }).catch(err => {
+                    console.warn("Advertencia al detener escáner de inventario (puede que ya estuviera detenido):", err);
+                    container.classList.add('hidden'); 
+                });
+            } else {
+                 container.classList.add('hidden');
+            }
+        }
+
+        document.getElementById('scanProductQRInventory').addEventListener('click', startInventoryQRScanner);
+        document.getElementById('stopInventoryQRScan').addEventListener('click', stopInventoryQRScanner);
+
+        function startSaleQRScanner() {
+            const qrReaderDiv = document.getElementById('sale-qr-reader');
+            const container = document.getElementById('saleQRScannerContainer');
+            container.classList.remove('hidden');
+            qrReaderDiv.innerHTML = '';
+
+            if (!saleQrScanner) {
+                saleQrScanner = new Html5Qrcode("sale-qr-reader");
+            }
+            
+            saleQrScanner.start(
+                { facingMode: "environment" },
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                 (decodedText, decodedResult) => onScanSuccess(decodedText, decodedResult, saleQrScanner, 'sale'),
+                 (errorMessage) => onScanFailure(errorMessage, saleQrScanner)
+            ).catch(err => {
+                console.error("Error iniciando escáner de ventas:", err);
+                showToast("Error al iniciar escáner QR: " + (err.message || err), "error");
+                container.classList.add('hidden');
+            });
+        }
+
+        function stopSaleQRScanner() {
+            const container = document.getElementById('saleQRScannerContainer');
+            if (saleQrScanner) { 
+                saleQrScanner.stop().then(() => {
+                    console.log("Escáner de ventas detenido.");
+                    container.classList.add('hidden');
+                }).catch(err => {
+                    console.warn("Advertencia al detener escáner de ventas (puede que ya estuviera detenido):", err);
+                    container.classList.add('hidden'); 
+                });
+            } else {
+                container.classList.add('hidden');
+            }
+        }
+        
+        function stopAllScanners() {
+            stopInventoryQRScanner();
+            stopSaleQRScanner();
+        }
+
+        document.getElementById('scanProductQRSale').addEventListener('click', startSaleQRScanner);
+        document.getElementById('stopSaleQRScan').addEventListener('click', stopSaleQRScanner);
+
+
+        // --- Reportes Financieros ---
+        let allProductsCache = []; 
+        let allSalesCache = [];   
+
+        function calculateFinancials() {
+            const totalInventoryValue = allProductsCache.reduce((sum, product) => sum + (product.quantity * product.costPrice), 0);
+            document.getElementById('totalInventoryValue').textContent = `$${totalInventoryValue.toFixed(2)}`;
+
+            const totalGrossProfit = allSalesCache.reduce((sum, sale) => sum + sale.totalProfit, 0);
+            document.getElementById('totalGrossProfit').textContent = `$${totalGrossProfit.toFixed(2)}`;
+        }
+
+        // --- Importar/Exportar Excel ---
+        document.getElementById('exportInventory').addEventListener('click', () => {
+            if (!userId || allProductsCache.length === 0) {
+                showToast("No hay productos para exportar.", "info");
+                return;
+            }
+            const dataToExport = allProductsCache.map(p => ({
+                'QR_ID': p.id,
+                'Nombre': p.name,
+                'Cantidad': p.quantity,
+                'PrecioCosto': p.costPrice,
+                'PrecioVenta': p.salePrice,
+                'StockMinimo': p.minStock
+            }));
+            const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Inventario");
+            XLSX.writeFile(workbook, "inventario_exportado.xlsx");
+            showToast("Inventario exportado con éxito.", "success");
+        });
+
+        document.getElementById('importInventory').addEventListener('click', async () => {
+            if (!userId) { showToast("Usuario no autenticado.", "error"); return; }
+            const fileInput = document.getElementById('importFile');
+            if (fileInput.files.length === 0) {
+                showToast("Por favor, selecciona un archivo Excel para importar.", "warning");
+                return;
+            }
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const data = new Uint8Array(event.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const jsonData = XLSX.utils.sheet_to_json(worksheet);
+                    
+                    if (jsonData.length === 0) {
+                        showToast("El archivo Excel está vacío o no tiene datos.", "warning");
+                        return;
+                    }
+
+                    const batch = writeBatch(db);
+                    let productsProcessed = 0;
+                    let productsAdded = 0;
+                    let productsUpdated = 0;
+
+                    for (const row of jsonData) {
+                        const qrId = row['QR_ID'] ? String(row['QR_ID']).trim() : crypto.randomUUID();
+                        const name = String(row['Nombre']).trim();
+                        const quantity = parseInt(row['Cantidad']);
+                        const costPrice = parseFloat(row['PrecioCosto']);
+                        const salePrice = parseFloat(row['PrecioVenta']);
+                        const minStock = parseInt(row['StockMinimo']) || 0;
+
+                        if (!name || isNaN(quantity) || isNaN(costPrice) || isNaN(salePrice)) {
+                            console.warn(`Fila ignorada por datos incompletos o incorrectos: ${JSON.stringify(row)}`);
+                            continue;
+                        }
+                         if (costPrice > salePrice) {
+                            console.warn(`Fila ignorada para el producto "${name}": El precio de costo (${costPrice}) no puede ser mayor al precio de venta (${salePrice}).`);
+                            showToast(`Error en producto "${name}": Precio costo > Precio venta. Fila ignorada.`, "warning");
+                            continue;
+                        }
+
+
+                        const productData = { name, quantity, costPrice, salePrice, minStock };
+                        const productRef = doc(db, 'artifacts', appId, 'users', userId, 'products', qrId);
+                        
+                        const docSnap = await getDoc(productRef); 
+                        if (docSnap.exists()) {
+                            productsUpdated++;
+                        } else {
+                            productsAdded++;
+                        }
+                        batch.set(productRef, productData, { merge: true }); 
+                        productsProcessed++;
+                    }
+
+                    if (productsProcessed > 0) {
+                        await batch.commit();
+                        showToast(`${productsAdded} productos añadidos, ${productsUpdated} productos actualizados de ${productsProcessed} procesados.`, "success");
+                    } else {
+                        showToast("No se procesaron productos del archivo. Verifica el formato y los datos.", "warning");
+                    }
+                    fileInput.value = ''; 
+                } catch (error) {
+                    console.error("Error importando inventario:", error);
+                    showToast("Error al importar inventario: " + error.message, "error");
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+
+        // --- Carga Inicial y Suscripciones (onSnapshot) ---
+        function loadInitialData() {
+            if (!userId) return;
+
+            // Suscripción a Tiendas
+            const storesCol = collection(db, 'artifacts', appId, 'users', userId, 'stores');
+            onSnapshot(storesCol, (snapshot) => {
+                const storesData = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderStores(storesData);
+            }, (error) => {
+                console.error("Error escuchando cambios en tiendas:", error);
+                showToast("Error al cargar tiendas: " + error.message, "error");
+            });
+
+            // Suscripción a Productos
+            const productsCol = collection(db, 'artifacts', appId, 'users', userId, 'products');
+            onSnapshot(productsCol, (snapshot) => {
+                allProductsCache = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderProducts(allProductsCache); 
+                filterProducts(searchProductQRInput.value.toLowerCase().trim()); 
+            }, (error) => {
+                console.error("Error escuchando cambios en productos:", error);
+                showToast("Error al cargar productos: " + error.message, "error");
+            });
+            
+            // Suscripción a Ventas
+            const salesCol = collection(db, 'artifacts', appId, 'users', userId, 'sales');
+            onSnapshot(salesCol, (snapshot) => {
+                allSalesCache = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderSalesHistory(allSalesCache); 
+            }, (error) => {
+                console.error("Error escuchando cambios en ventas:", error);
+                showToast("Error al cargar historial de ventas: " + error.message, "error");
+            });
+        }
+        
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        } else {
+            console.warn("Lucide no está definido globalmente al intentar la creación inicial de iconos.");
+        }
+
+    </script>
+</body>
+</html>
