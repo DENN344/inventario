@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sistema de Inventario y Ventas (Local)</title>
+    <title>Sistema de Inventario y Ventas (Firebase)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -21,16 +21,36 @@
         #qr-reader__dashboard_section_csr button { background-color: #ef4444; color: white; padding: 8px; border-radius: 5px; margin-top: 10px;}
         .product-search-results { max-height: 200px; overflow-y: auto; border: 1px solid #ccc; }
         .product-search-item:hover { background-color: #f0f0f0; }
+        /* Estilos para el mensaje de carga */
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 10000; /* Muy alto para estar encima de todo */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+        }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
+    <div id="loadingOverlay">
+        <p>Cargando datos y conectando a Firebase...</p>
+    </div>
+
     <div class="container mx-auto p-4">
         <header class="bg-blue-600 text-white p-6 rounded-lg shadow-lg mb-6">
-            <h1 class="text-3xl font-bold">Sistema de Control de Inventario y Ventas (Local)</h1>
-            <p class="text-sm">Usuario: <span id="userIdDisplay" class="font-mono">Usuario Local</span></p>
+            <h1 class="text-3xl font-bold">Sistema de Control de Inventario y Ventas (Firebase)</h1>
+            <p class="text-sm">App ID: <span id="appIdDisplay" class="font-mono"></span></p>
+            <p class="text-sm">Usuario ID: <span id="userIdDisplay" class="font-mono"></span></p>
         </header>
 
-        <div class="mb-6 flex space-x-2 border-b border-gray-300">
+        <div class="mb-6 flex space-x-2 border-b border-gray-300 overflow-x-auto">
             <button class="tab-button py-2 px-4 font-semibold border-b-2 border-transparent hover:border-blue-500 hover:text-blue-500 focus:outline-none active" data-tab="dashboard">
                 <i data-lucide="layout-dashboard" class="inline-block mr-2"></i>Dashboard
             </button>
@@ -292,44 +312,199 @@
         <p id="toastMessage"></p>
     </div>
 
-    <script>
-        // --- In-memory Data Storage ---
-        let localProducts = []; // Stores product objects { id, name, quantity, costPrice, salePrice, minStock }
-        let localStores = [];   // Stores store objects { id, name }
-        let localSales = [];    // Stores sale objects { id, date, storeId, storeName, items: [], totalAmount, totalProfit }
+    <script type="module">
+        // Import Firebase modules
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getDatabase, ref, set, get, onValue, remove, update, child, push as firebasePush } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
+
+        // Firebase configuration (will be provided by the environment)
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         
-        let currentEditingProductId = null; // Stores the ID of the product being edited
-        let currentEditingStoreId = null; // Stores the ID of the store being edited
+        let fbApp;
+        let fbAuth;
+        let fbDb;
+        let userId = null;
+
+        // Database references
+        let productsRef, storesRef, salesRef;
+
+        // Local cache of data (primarily for quick filtering/searching and populating forms)
+        let localProducts = {}; 
+        let localStores = {};
+        let localSales = {};
+        
+        let currentEditingProductId = null;
+        let currentEditingStoreId = null;
         let inventoryQrScanner = null;
         let saleQrScanner = null;
-        let currentSaleItems = []; // Temporary storage for items in the current sale being recorded
+        let currentSaleItems = []; 
 
+        const loadingOverlay = document.getElementById('loadingOverlay');
+
+        // --- Initialize Firebase and Auth ---
+        async function initializeFirebase() {
+            if (!firebaseConfig) {
+                console.error("Firebase config is missing!");
+                showToast("Error crítico: Configuración de Firebase no encontrada.", "error");
+                loadingOverlay.textContent = "Error: Configuración de Firebase no encontrada.";
+                return;
+            }
+
+            try {
+                fbApp = initializeApp(firebaseConfig);
+                fbAuth = getAuth(fbApp);
+                fbDb = getDatabase(fbApp);
+                console.log("Firebase initialized.");
+                document.getElementById('appIdDisplay').textContent = appId;
+
+                // Set log level to debug for more detailed Firebase logs
+                // firebase.setLogLevel('debug'); // For older SDK versions, not directly available in v9+ modular
+
+                onAuthStateChanged(fbAuth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("User is signed in with UID:", userId);
+                        document.getElementById('userIdDisplay').textContent = userId;
+                        setupDatabaseReferences();
+                        loadInitialDataFromFirebase();
+                    } else {
+                        console.log("User is signed out. Attempting to sign in...");
+                        await attemptSignIn();
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                showToast("Error al inicializar Firebase: " + error.message, "error");
+                loadingOverlay.textContent = "Error al conectar con Firebase.";
+            }
+        }
+
+        async function attemptSignIn() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    console.log("Attempting sign in with custom token...");
+                    await signInWithCustomToken(fbAuth, __initial_auth_token);
+                } else {
+                    console.log("Attempting anonymous sign in...");
+                    await signInAnonymously(fbAuth);
+                }
+            } catch (error) {
+                console.error("Error during sign-in:", error);
+                showToast("Error de autenticación: " + error.message, "error");
+                loadingOverlay.textContent = "Error de autenticación.";
+                // If sign-in fails, we might not be able to proceed.
+            }
+        }
+
+        function setupDatabaseReferences() {
+            if (!userId) {
+                console.error("User ID is not available. Cannot set up database references.");
+                showToast("Error: Usuario no identificado. No se pueden cargar los datos.", "error");
+                loadingOverlay.textContent = "Error: Usuario no identificado.";
+                return;
+            }
+            const basePath = `artifacts/${appId}/users/${userId}`;
+            productsRef = ref(fbDb, `${basePath}/products`);
+            storesRef = ref(fbDb, `${basePath}/stores`);
+            salesRef = ref(fbDb, `${basePath}/sales`);
+            console.log("Database references set up for user:", userId);
+        }
+        
         // --- DOMContentLoaded to initialize ---
-        document.addEventListener('DOMContentLoaded', () => {
-            loadInitialData();
+        document.addEventListener('DOMContentLoaded', async () => {
+            loadingOverlay.style.display = 'flex'; // Show loading overlay
+            await initializeFirebase(); // Initialize Firebase first
+
             if (typeof lucide !== 'undefined') {
                 lucide.createIcons();
             } else {
                 console.warn("Lucide icons no están disponibles al cargar la página.");
             }
+            // Other initializations that don't depend on Firebase data yet
+            setupEventListeners();
         });
+
+        function setupEventListeners() {
+            // Tab navigation
+            const tabButtons = document.querySelectorAll('.tab-button');
+            const tabPanes = document.querySelectorAll('.tab-pane');
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    tabButtons.forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+                    const tab = button.getAttribute('data-tab');
+                    tabPanes.forEach(pane => {
+                        if (pane.id === `${tab}-content`) {
+                            pane.classList.remove('hidden');
+                            pane.classList.add('active');
+                        } else {
+                            pane.classList.remove('active');
+                            pane.classList.add('hidden');
+                        }
+                    });
+                    stopAllScanners(); 
+                });
+            });
+
+            // Confirmation Modal
+            confirmActionButton.addEventListener('click', () => {
+                if (currentConfirmAction) currentConfirmAction();
+                closeModal('confirmationModal');
+                currentConfirmAction = null;
+            });
+            cancelActionButton.addEventListener('click', () => {
+                closeModal('confirmationModal');
+                currentConfirmAction = null;
+            });
+
+            // Store Management Modals & Form
+            document.getElementById('openAddStoreModal').addEventListener('click', openAddStoreModalHandler);
+            document.getElementById('closeStoreModal').addEventListener('click', () => closeModal('storeModal'));
+            document.getElementById('storeForm').addEventListener('submit', saveStoreHandler);
+
+            // Product Management Modals & Form
+            document.getElementById('openAddProductModal').addEventListener('click', openAddProductModalHandler);
+            document.getElementById('closeProductModal').addEventListener('click', () => closeModal('productModal'));
+            document.getElementById('productForm').addEventListener('submit', saveProductHandler);
+            document.getElementById('searchProductQR').addEventListener('input', () => renderProducts(localProducts));
+            document.getElementById('closeViewQRModal').addEventListener('click', () => closeModal('viewQRModal'));
+
+
+            // Sales Management Modals & Form
+            document.getElementById('openRecordSaleModal').addEventListener('click', openRecordSaleModalHandler);
+            document.getElementById('closeSaleModal').addEventListener('click', () => {
+                closeModal('recordSaleModal');
+                stopSaleQRScanner(); 
+            });
+            document.getElementById('saleForm').addEventListener('submit', saveSaleHandler);
+            document.getElementById('saleSearchProduct').addEventListener('input', saleSearchProductHandler);
+            
+            // QR Scanners
+            document.getElementById('scanProductQRInventory').addEventListener('click', startInventoryQRScanner);
+            document.getElementById('stopInventoryQRScan').addEventListener('click', stopInventoryQRScanner);
+            document.getElementById('scanProductQRSale').addEventListener('click', startSaleQRScanner);
+            document.getElementById('stopSaleQRScan').addEventListener('click', stopSaleQRScanner);
+
+            // Import/Export
+            document.getElementById('exportInventory').addEventListener('click', exportInventoryHandler);
+            document.getElementById('importInventory').addEventListener('click', importInventoryHandler);
+        }
         
         // --- Toast Notifications ---
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             const toastMessage = document.getElementById('toastMessage');
             toastMessage.textContent = message;
-            toast.classList.remove('opacity-0', 'bg-red-500', 'bg-green-500', 'bg-blue-500', 'bg-yellow-500'); // Ensure all color classes are removed first
+            toast.classList.remove('opacity-0', 'bg-red-500', 'bg-green-500', 'bg-blue-500', 'bg-yellow-500');
             
-            if (type === 'error') {
-                toast.classList.add('bg-red-500');
-            } else if (type === 'info') {
-                toast.classList.add('bg-blue-500');
-            } else if (type === 'warning') {
-                toast.classList.add('bg-yellow-500');
-            } else { // success
-                toast.classList.add('bg-green-600');
-            }
+            if (type === 'error') toast.classList.add('bg-red-500');
+            else if (type === 'info') toast.classList.add('bg-blue-500');
+            else if (type === 'warning') toast.classList.add('bg-yellow-500');
+            else toast.classList.add('bg-green-600');
+            
             toast.classList.add('opacity-100');
             setTimeout(() => {
                 toast.classList.remove('opacity-100');
@@ -337,28 +512,6 @@
             }, 3000);
         }
         
-        // --- Tab Navigation ---
-        const tabButtons = document.querySelectorAll('.tab-button');
-        const tabPanes = document.querySelectorAll('.tab-pane');
-
-        tabButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                tabButtons.forEach(btn => btn.classList.remove('active'));
-                button.classList.add('active');
-                const tab = button.getAttribute('data-tab');
-                tabPanes.forEach(pane => {
-                    if (pane.id === `${tab}-content`) {
-                        pane.classList.remove('hidden');
-                        pane.classList.add('active');
-                    } else {
-                        pane.classList.remove('active');
-                        pane.classList.add('hidden');
-                    }
-                });
-                stopAllScanners(); // Stop scanners when changing tabs
-            });
-        });
-
         // --- Modal Helper Functions ---
         function openModal(modalId) {
             const modal = document.getElementById(modalId);
@@ -383,75 +536,64 @@
             openModal('confirmationModal');
         }
 
-        confirmActionButton.addEventListener('click', () => {
-            if (currentConfirmAction) {
-                currentConfirmAction();
-            }
-            closeModal('confirmationModal');
-            currentConfirmAction = null; // Reset action
-        });
-        cancelActionButton.addEventListener('click', () => {
-            closeModal('confirmationModal');
-            currentConfirmAction = null; // Reset action
-        });
-
         // --- Store Management ---
         const storeModal = document.getElementById('storeModal');
         const storeForm = document.getElementById('storeForm');
-        const storeListEl = document.getElementById('storeList'); // Renamed to avoid conflict
+        const storeListEl = document.getElementById('storeList');
         const saleStoreSelect = document.getElementById('saleStore');
 
-        document.getElementById('openAddStoreModal').addEventListener('click', () => {
+        function openAddStoreModalHandler() {
             storeForm.reset();
             currentEditingStoreId = null;
             document.getElementById('storeModalTitle').textContent = 'Añadir Nueva Tienda';
             openModal('storeModal');
-        });
-        document.getElementById('closeStoreModal').addEventListener('click', () => closeModal('storeModal'));
+        }
 
-        storeForm.addEventListener('submit', (e) => {
+        async function saveStoreHandler(e) {
             e.preventDefault();
+            if (!storesRef) { showToast("Error: Referencia a tiendas no configurada.", "error"); return; }
+
             const storeName = document.getElementById('storeName').value.trim();
             if (!storeName) {
                 showToast("El nombre de la tienda es obligatorio.", "error");
                 return;
             }
 
-            if (currentEditingStoreId) { // Editing existing store
-                const storeIndex = localStores.findIndex(s => s.id === currentEditingStoreId);
-                if (storeIndex > -1) {
-                    localStores[storeIndex].name = storeName;
-                    showToast("Tienda actualizada con éxito.");
-                } else {
-                    showToast("Error: Tienda no encontrada para actualizar.", "error");
-                }
-            } else { // Adding new store
-                 // Check if store name already exists (case-insensitive)
-                if (localStores.some(s => s.name.toLowerCase() === storeName.toLowerCase())) {
-                    showToast("Error: Ya existe una tienda con este nombre.", "error");
-                    return;
-                }
-                const newStore = {
-                    id: crypto.randomUUID(), // Generate unique ID for the store
-                    name: storeName
-                };
-                localStores.push(newStore);
-                showToast("Tienda añadida con éxito.");
+            // Check for duplicate store names (case-insensitive)
+            const storesArray = Object.values(localStores);
+            if (storesArray.some(s => s.name.toLowerCase() === storeName.toLowerCase() && s.id !== currentEditingStoreId)) {
+                 showToast("Error: Ya existe una tienda con este nombre.", "error");
+                 return;
             }
-            
-            renderStores();
-            closeModal('storeModal');
-            currentEditingStoreId = null;
-        });
+
+            try {
+                if (currentEditingStoreId) { // Editing
+                    await set(ref(fbDb, `${storesRef.key}/${currentEditingStoreId}`), { name: storeName, id: currentEditingStoreId });
+                    showToast("Tienda actualizada con éxito.");
+                } else { // Adding new
+                    const newStoreId = crypto.randomUUID();
+                    await set(ref(fbDb, `${storesRef.key}/${newStoreId}`), { name: storeName, id: newStoreId });
+                    showToast("Tienda añadida con éxito.");
+                }
+                closeModal('storeModal');
+                // Real-time listener will update the list (renderStores)
+            } catch (error) {
+                console.error("Error guardando tienda:", error);
+                showToast("Error al guardar la tienda: " + error.message, "error");
+            }
+        }
         
-        function renderStores() {
+        function renderStores(storesData) {
+            localStores = storesData || {}; // Update local cache
             storeListEl.innerHTML = '';
             saleStoreSelect.innerHTML = '<option value="">Seleccione una tienda</option>';
             
-            if (localStores.length === 0) {
+            const storesArray = Object.values(localStores);
+
+            if (storesArray.length === 0) {
                 storeListEl.innerHTML = '<tr><td colspan="3" class="text-center py-4">No hay tiendas registradas.</td></tr>';
             } else {
-                localStores.forEach(store => {
+                storesArray.forEach(store => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${store.id}</td>
@@ -464,7 +606,7 @@
                     storeListEl.appendChild(tr);
 
                     const option = document.createElement('option');
-                    option.value = store.id; // Use store ID as value
+                    option.value = store.id;
                     option.textContent = store.name;
                     saleStoreSelect.appendChild(option);
                 });
@@ -477,18 +619,18 @@
             document.querySelectorAll('.delete-store-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     const storeIdToDelete = e.currentTarget.getAttribute('data-id');
-                    const storeName = localStores.find(s => s.id === storeIdToDelete)?.name || storeIdToDelete;
+                    const storeName = localStores[storeIdToDelete]?.name || storeIdToDelete;
                     showConfirmationModal('Eliminar Tienda', `¿Estás seguro de que quieres eliminar la tienda "${storeName}"? Esta acción no se puede deshacer.`, () => deleteStore(storeIdToDelete));
                 });
             });
         }
 
         function loadStoreForEdit(storeId) {
-            const store = localStores.find(s => s.id === storeId);
+            const store = localStores[storeId];
             if (store) {
                 currentEditingStoreId = store.id;
                 document.getElementById('storeModalTitle').textContent = 'Editar Tienda';
-                document.getElementById('storeId').value = store.id;
+                document.getElementById('storeId').value = store.id; // Hidden field, not strictly necessary if using currentEditingStoreId
                 document.getElementById('storeName').value = store.name;
                 openModal('storeModal');
             } else {
@@ -496,19 +638,26 @@
             }
         }
 
-        function deleteStore(storeId) {
+        async function deleteStore(storeId) {
+            if (!storesRef) { showToast("Error: Referencia a tiendas no configurada.", "error"); return; }
+            
             // Check if the store is used in any sales
-            const isStoreUsedInSales = localSales.some(sale => sale.storeId === storeId);
+            const salesArray = Object.values(localSales);
+            const isStoreUsedInSales = salesArray.some(sale => sale.storeId === storeId);
             if (isStoreUsedInSales) {
-                showToast("No se puede eliminar la tienda porque tiene ventas asociadas. Elimine primero las ventas o asígnelas a otra tienda (funcionalidad no implementada).", "error");
+                showToast("No se puede eliminar la tienda porque tiene ventas asociadas.", "error");
                 return;
             }
 
-            localStores = localStores.filter(s => s.id !== storeId);
-            showToast("Tienda eliminada con éxito.");
-            renderStores();
+            try {
+                await remove(ref(fbDb, `${storesRef.key}/${storeId}`));
+                showToast("Tienda eliminada con éxito.");
+                // Real-time listener will update the list
+            } catch (error) {
+                console.error("Error eliminando tienda:", error);
+                showToast("Error al eliminar la tienda: " + error.message, "error");
+            }
         }
-
 
         // --- Product Management ---
         const productModal = document.getElementById('productModal');
@@ -516,19 +665,19 @@
         const productListElement = document.getElementById('productList');
         const searchProductQRInput = document.getElementById('searchProductQR');
 
-        document.getElementById('openAddProductModal').addEventListener('click', () => {
+        function openAddProductModalHandler() {
             productForm.reset();
             currentEditingProductId = null;
             document.getElementById('productModalTitle').textContent = 'Añadir Producto';
-            document.getElementById('productQR').disabled = false; // Allow editing QR for new products
-            document.getElementById('productId').value = ''; // Clear hidden product ID field
+            document.getElementById('productQR').disabled = false;
+            document.getElementById('productId').value = '';
             openModal('productModal');
-        });
-        document.getElementById('closeProductModal').addEventListener('click', () => closeModal('productModal'));
+        }
 
-        productForm.addEventListener('submit', (e) => {
+        async function saveProductHandler(e) {
             e.preventDefault();
-            
+            if (!productsRef) { showToast("Error: Referencia a productos no configurada.", "error"); return; }
+
             let productQR = document.getElementById('productQR').value.trim();
             const productName = document.getElementById('productName').value.trim();
             const productQuantity = parseInt(document.getElementById('productQuantity').value);
@@ -552,37 +701,43 @@
                 salePrice: productSalePrice,
                 minStock: productMinStock,
             };
+            
+            try {
+                if (currentEditingProductId) { // Editing
+                    productData.id = productQR || currentEditingProductId; // Use new QR if provided, else old one
+                    // Check if new QR ID (if changed) conflicts with another existing product
+                    if (productQR && productQR !== currentEditingProductId && localProducts[productQR]) {
+                         showToast("Error: El nuevo Código QR/ID ya existe para otro producto.", "error");
+                         return;
+                    }
+                    // If QR ID changed, we need to remove the old one and set the new one
+                    if (productQR && productQR !== currentEditingProductId) {
+                        await remove(ref(fbDb, `${productsRef.key}/${currentEditingProductId}`)); // Remove old entry
+                        await set(ref(fbDb, `${productsRef.key}/${productQR}`), productData); // Add as new entry with new ID
+                    } else {
+                        productData.id = currentEditingProductId; // Ensure ID is the original one
+                        await update(ref(fbDb, `${productsRef.key}/${currentEditingProductId}`), productData);
+                    }
+                    showToast("Producto actualizado con éxito.");
 
-            if (currentEditingProductId) { // Editing existing product
-                const productIndex = localProducts.findIndex(p => p.id === currentEditingProductId);
-                if (productIndex > -1) {
-                    // If productQR field was changed and it's different from original ID, check for conflicts
-                    if (productQR && productQR !== currentEditingProductId && localProducts.some(p => p.id === productQR)) {
-                        showToast("Error: El nuevo Código QR/ID ya existe para otro producto.", "error");
+                } else { // Adding new
+                    if (!productQR) productQR = crypto.randomUUID();
+                    else if (localProducts[productQR]) { // Check if user-provided QR exists
+                        showToast("Error: Ya existe un producto con este Código QR/ID.", "error");
                         return;
                     }
-                    localProducts[productIndex] = { ...localProducts[productIndex], ...productData, id: productQR || currentEditingProductId }; // Update ID if changed
-                    showToast("Producto actualizado con éxito.");
-                } else {
-                     showToast("Error: Producto no encontrado para actualizar.", "error");
+                    productData.id = productQR;
+                    await set(ref(fbDb, `${productsRef.key}/${productQR}`), productData);
+                    showToast("Producto añadido con éxito.");
                 }
-            } else { // Adding new product
-                if (!productQR) { 
-                    productQR = crypto.randomUUID(); // Autogenerate QR if empty
-                } else if (localProducts.some(p => p.id === productQR)) {
-                    showToast("Error: Ya existe un producto con este Código QR/ID.", "error");
-                    return;
-                }
-                productData.id = productQR;
-                localProducts.push(productData);
-                showToast("Producto añadido con éxito.");
+                closeModal('productModal');
+                productForm.reset();
+                // Real-time listener will update the list
+            } catch (error) {
+                console.error("Error guardando producto:", error);
+                showToast("Error al guardar el producto: " + error.message, "error");
             }
-            
-            renderProducts();
-            closeModal('productModal');
-            productForm.reset();
-            currentEditingProductId = null;
-        });
+        }
         
         function getStockStatus(quantity, minStock) {
             if (quantity <= 0) return { text: "Agotado", class: "out-of-stock" };
@@ -590,21 +745,26 @@
             return { text: "En Stock", class: "in-stock" };
         }
 
-        function renderProducts() {
+        function renderProducts(productsData) {
+            localProducts = productsData || {}; // Update local cache
             productListElement.innerHTML = '';
-            if (localProducts.length === 0) {
-                productListElement.innerHTML = '<tr><td colspan="8" class="text-center py-4">No hay productos en el inventario.</td></tr>';
-            } else {
-                const searchTerm = searchProductQRInput.value.toLowerCase().trim();
-                const filteredProducts = localProducts.filter(product => 
-                    product.id.toLowerCase().includes(searchTerm) || 
-                    product.name.toLowerCase().includes(searchTerm)
-                );
+            
+            const searchTerm = searchProductQRInput.value.toLowerCase().trim();
+            const productsArray = Object.values(localProducts).filter(product => 
+                product.id.toLowerCase().includes(searchTerm) || 
+                product.name.toLowerCase().includes(searchTerm)
+            );
 
-                filteredProducts.forEach(product => {
+            if (productsArray.length === 0 && Object.keys(localProducts).length === 0) {
+                 productListElement.innerHTML = '<tr><td colspan="8" class="text-center py-4">No hay productos en el inventario.</td></tr>';
+            } else if (productsArray.length === 0 && searchTerm) {
+                 productListElement.innerHTML = `<tr><td colspan="8" class="text-center py-4">No se encontraron productos para "${searchTerm}".</td></tr>`;
+            }
+            else {
+                productsArray.forEach(product => {
                     const stockStatus = getStockStatus(product.quantity, product.minStock);
                     const tr = document.createElement('tr');
-                    tr.classList.add(stockStatus.class.split(' ')[0]); // Add base class for styling
+                    tr.classList.add(stockStatus.class.split(' ')[0]);
 
                     tr.innerHTML = `
                         <td class="px-6 py-4 whitespace-nowrap">
@@ -641,7 +801,7 @@
             document.querySelectorAll('.delete-product-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                      const productIdToDelete = e.currentTarget.getAttribute('data-id');
-                     const productName = localProducts.find(p => p.id === productIdToDelete)?.name || productIdToDelete;
+                     const productName = localProducts[productIdToDelete]?.name || productIdToDelete;
                      showConfirmationModal('Eliminar Producto', `¿Estás seguro de que quieres eliminar el producto "${productName}"? Esta acción no se puede deshacer.`, () => deleteProduct(productIdToDelete));
                 });
             });
@@ -658,17 +818,15 @@
             });
             calculateFinancials();
         }
-        document.getElementById('closeViewQRModal').addEventListener('click', () => closeModal('viewQRModal'));
-
 
         function loadProductForEdit(productId) {
-            const product = localProducts.find(p => p.id === productId);
+            const product = localProducts[productId];
             if (product) {
                 currentEditingProductId = product.id;
                 document.getElementById('productModalTitle').textContent = 'Editar Producto';
-                document.getElementById('productId').value = product.id; // Store original ID for reference
+                document.getElementById('productId').value = product.id;
                 document.getElementById('productQR').value = product.id; 
-                document.getElementById('productQR').disabled = false; // Allow editing QR, but be careful with duplicates
+                document.getElementById('productQR').disabled = false; // Allow editing QR
                 document.getElementById('productName').value = product.name;
                 document.getElementById('productQuantity').value = product.quantity;
                 document.getElementById('productCostPrice').value = product.costPrice;
@@ -680,20 +838,25 @@
             }
         }
 
-        function deleteProduct(productId) {
-            // Check if product is in any sale
-            const isProductInSale = localSales.some(sale => sale.items.some(item => item.productId === productId));
+        async function deleteProduct(productId) {
+            if (!productsRef) { showToast("Error: Referencia a productos no configurada.", "error"); return; }
+
+            const salesArray = Object.values(localSales);
+            const isProductInSale = salesArray.some(sale => sale.items.some(item => item.productId === productId));
             if (isProductInSale) {
                 showToast("No se puede eliminar el producto porque está incluido en ventas registradas.", "error");
                 return;
             }
-            localProducts = localProducts.filter(p => p.id !== productId);
-            showToast("Producto eliminado con éxito.");
-            renderProducts();
+            try {
+                await remove(ref(fbDb, `${productsRef.key}/${productId}`));
+                showToast("Producto eliminado con éxito.");
+                // Real-time listener will update
+            } catch (error) {
+                console.error("Error eliminando producto:", error);
+                showToast("Error al eliminar el producto: " + error.message, "error");
+            }
         }
         
-        searchProductQRInput.addEventListener('input', () => renderProducts()); // Re-render on search
-
         // --- Sales Management ---
         const recordSaleModal = document.getElementById('recordSaleModal');
         const saleForm = document.getElementById('saleForm');
@@ -703,7 +866,7 @@
         const saleItemsListDiv = document.getElementById('saleItemsList');
         const saleTotalAmountSpan = document.getElementById('saleTotalAmount');
 
-        document.getElementById('openRecordSaleModal').addEventListener('click', () => {
+        function openRecordSaleModalHandler() {
             saleForm.reset();
             currentSaleItems = [];
             updateSaleItemsList();
@@ -711,34 +874,30 @@
             saleProductSearchResultsDiv.innerHTML = ''; 
             saleSearchProductInput.value = ''; 
             
-            // Populate store select - already handled by renderStores calling loadInitialData
-            if (localStores.length === 0) {
+            if (Object.keys(localStores).length === 0) {
                 showToast("No hay tiendas registradas. Por favor, añada una tienda primero.", "warning");
-                // Optionally, could redirect to stores tab or disable button
                 return;
             }
-            renderStores(); // Ensure saleStoreSelect is populated
+            // renderStores already populates saleStoreSelect, called by onValue
             openModal('recordSaleModal');
-        });
-        document.getElementById('closeSaleModal').addEventListener('click', () => {
-            closeModal('recordSaleModal');
-            stopSaleQRScanner(); 
-        });
-
-        saleSearchProductInput.addEventListener('input', (e) => {
+        }
+        
+        function saleSearchProductHandler(e) {
             const searchTerm = e.target.value.trim().toLowerCase();
-            if (searchTerm.length < 1) { // Show results even for 1 character
+            if (searchTerm.length < 1) {
                 saleProductSearchResultsDiv.innerHTML = '';
                 saleProductSearchResultsDiv.classList.add('hidden');
                 return;
             }
             
-            const results = localProducts.filter(product => 
-                product.quantity > 0 && // Only show products in stock
+            const productsArray = Object.values(localProducts);
+            const results = productsArray.filter(product => 
+                product.quantity > 0 &&
                 (product.name.toLowerCase().includes(searchTerm) || product.id.toLowerCase().includes(searchTerm))
             );
             renderSaleProductSearchResults(results);
-        });
+        }
+
 
         function renderSaleProductSearchResults(products) {
             saleProductSearchResultsDiv.innerHTML = '';
@@ -764,7 +923,7 @@
 
             const existingItem = currentSaleItems.find(item => item.productId === product.id);
             if (existingItem) {
-                const productInStock = localProducts.find(p => p.id === product.id);
+                const productInStock = localProducts[product.id]; // Get current stock from local cache
                 if (productInStock && existingItem.quantity < productInStock.quantity) {
                     existingItem.quantity++;
                 } else {
@@ -827,7 +986,7 @@
                 return;
             }
             
-            const productInStock = localProducts.find(p => p.id === item.productId);
+            const productInStock = localProducts[item.productId];
             if (productInStock && newQuantity > productInStock.quantity) {
                 showToast(`Stock insuficiente para "${item.productName}". Disponible: ${productInStock.quantity}.`, "warning");
                 return; 
@@ -849,8 +1008,10 @@
             saleTotalAmountSpan.textContent = total.toFixed(2);
         }
 
-        saleForm.addEventListener('submit', (e) => {
+        async function saveSaleHandler(e) {
             e.preventDefault();
+            if (!salesRef || !productsRef) { showToast("Error: Referencias a base de datos no configuradas.", "error"); return; }
+
             const saleStoreElement = document.getElementById('saleStore');
             const storeId = saleStoreElement.value;
             const storeName = saleStoreElement.options[saleStoreElement.selectedIndex]?.text || "Tienda Desconocida";
@@ -864,11 +1025,9 @@
                 return;
             }
 
-            // Create a deep copy of currentSaleItems for the sale record
             const saleItemsForRecord = JSON.parse(JSON.stringify(currentSaleItems));
-
             const saleData = {
-                id: crypto.randomUUID(), // Unique ID for the sale
+                id: crypto.randomUUID(),
                 storeId: storeId,
                 storeName: storeName,
                 items: saleItemsForRecord.map(item => ({ 
@@ -877,7 +1036,7 @@
                     quantity: item.quantity,
                     unitPrice: item.unitPrice,
                     totalItemPrice: item.quantity * item.unitPrice,
-                    itemCost: item.costPrice, // Cost price at the time of sale
+                    itemCost: item.costPrice,
                     itemProfit: (item.unitPrice - item.costPrice) * item.quantity 
                 })),
                 totalAmount: parseFloat(saleTotalAmountSpan.textContent),
@@ -885,49 +1044,57 @@
                 date: new Date().toISOString()
             };
 
-            // Update product quantities in localProducts
+            // Transaction-like update for product quantities
+            const updates = {};
             let stockSufficient = true;
-            saleData.items.forEach(item => {
-                const productIndex = localProducts.findIndex(p => p.id === item.productId);
-                if (productIndex > -1) {
-                    if (localProducts[productIndex].quantity >= item.quantity) {
-                        localProducts[productIndex].quantity -= item.quantity;
+
+            for (const item of saleData.items) {
+                const productSnapshot = await get(child(productsRef, item.productId));
+                if (productSnapshot.exists()) {
+                    const productDataFirebase = productSnapshot.val();
+                    if (productDataFirebase.quantity >= item.quantity) {
+                        updates[`${productsRef.key}/${item.productId}/quantity`] = productDataFirebase.quantity - item.quantity;
                     } else {
-                        showToast(`Stock insuficiente para ${item.productName} al momento de confirmar. Venta cancelada.`, "error");
+                        showToast(`Stock insuficiente para ${item.productName} (en base de datos). Venta cancelada.`, "error");
                         stockSufficient = false;
+                        break;
                     }
                 } else {
-                    showToast(`Producto ${item.productName} no encontrado en inventario. Venta cancelada.`, "error");
+                    showToast(`Producto ${item.productName} no encontrado en base de datos. Venta cancelada.`, "error");
                     stockSufficient = false;
+                    break;
                 }
-            });
+            }
 
             if (!stockSufficient) {
-                // Re-render products to show correct stock if sale failed mid-way (though it shouldn't reach here if checks are good)
-                renderProducts(); 
+                renderProducts(localProducts); // Re-render with current local cache if sale failed
                 return;
             }
 
-            localSales.push(saleData);
-            showToast("Venta registrada y stock actualizado con éxito.");
-            
-            renderProducts(); // Update product list with new quantities
-            renderSalesHistory();
-            calculateFinancials();
-            
-            closeModal('recordSaleModal');
-            currentSaleItems = []; // Clear items for next sale
-        });
+            try {
+                // Add sale record
+                updates[`${salesRef.key}/${saleData.id}`] = saleData;
+                await update(ref(fbDb), updates); // Perform all updates (sale + product quantities)
+
+                showToast("Venta registrada y stock actualizado con éxito.");
+                closeModal('recordSaleModal');
+                currentSaleItems = []; // Clear items for next sale
+                // Real-time listeners will update products and sales history
+            } catch (error) {
+                console.error("Error registrando venta:", error);
+                showToast("Error al registrar la venta: " + error.message, "error");
+            }
+        }
         
-        function renderSalesHistory() {
+        function renderSalesHistory(salesData) {
+            localSales = salesData || {}; // Update local cache
             salesHistoryTable.innerHTML = '';
-             if (localSales.length === 0) {
+            const salesArray = Object.values(localSales).sort((a, b) => new Date(b.date) - new Date(a.date));
+
+             if (salesArray.length === 0) {
                 salesHistoryTable.innerHTML = '<tr><td colspan="5" class="text-center py-4">No hay ventas registradas.</td></tr>';
             } else {
-                // Sort sales by date, most recent first
-                const sortedSales = [...localSales].sort((a, b) => new Date(b.date) - new Date(a.date));
-
-                sortedSales.forEach(sale => {
+                salesArray.forEach(sale => {
                     const tr = document.createElement('tr');
                     const itemsSummary = sale.items.map(item => `${item.productName} (x${item.quantity})`).join(', ');
                     tr.innerHTML = `
@@ -948,20 +1115,17 @@
             console.log(`Code matched = ${decodedText}`);
             if (context === 'inventory') {
                 searchProductQRInput.value = decodedText;
-                renderProducts(); // Filter based on new input
+                renderProducts(localProducts); // Filter based on new input
                 stopInventoryQRScanner();
             } else if (context === 'sale') {
                 saleSearchProductInput.value = decodedText;
-                // Trigger input event to search for the product
                 const event = new Event('input', { bubbles: true, cancelable: true });
                 saleSearchProductInput.dispatchEvent(event);
                 stopSaleQRScanner();
             }
         }
 
-        function onScanFailure(error) {
-            // console.warn(`Code scan error = ${error}`); // Can be noisy
-        }
+        function onScanFailure(error) { /* console.warn(`Code scan error = ${error}`); */ }
 
         function startInventoryQRScanner() {
             const qrReaderDiv = document.getElementById('inventory-qr-reader');
@@ -971,15 +1135,13 @@
             container.classList.remove('hidden');
             qrReaderDiv.innerHTML = ''; 
 
-            if (!inventoryQrScanner) {
-                 inventoryQrScanner = new Html5Qrcode("inventory-qr-reader");
-            }
+            if (!inventoryQrScanner) inventoryQrScanner = new Html5Qrcode("inventory-qr-reader");
            
             inventoryQrScanner.start(
                 { facingMode: "environment" }, 
                 { fps: 10, qrbox: { width: 250, height: 250 } },
                 (decodedText, decodedResult) => onScanSuccess(decodedText, 'inventory'),
-                (errorMessage) => onScanFailure(errorMessage)
+                onScanFailure
             ).catch(err => {
                 console.error("Error iniciando escáner de inventario:", err);
                 showToast("Error al iniciar escáner QR (inventario): " + (err.message || err), "error");
@@ -990,20 +1152,12 @@
         function stopInventoryQRScanner() {
             const container = document.getElementById('inventoryQRScannerContainer');
             if (inventoryQrScanner && inventoryQrScanner.isScanning) { 
-                inventoryQrScanner.stop().then(() => {
-                    console.log("Escáner de inventario detenido.");
-                }).catch(err => {
-                    console.warn("Advertencia al detener escáner de inventario:", err);
-                }).finally(() => {
-                     container.classList.add('hidden');
-                });
+                inventoryQrScanner.stop().catch(err => console.warn("Advertencia al detener escáner de inventario:", err))
+                                  .finally(() => container.classList.add('hidden'));
             } else {
                  container.classList.add('hidden');
             }
         }
-
-        document.getElementById('scanProductQRInventory').addEventListener('click', startInventoryQRScanner);
-        document.getElementById('stopInventoryQRScan').addEventListener('click', stopInventoryQRScanner);
 
         function startSaleQRScanner() {
             const qrReaderDiv = document.getElementById('sale-qr-reader');
@@ -1013,15 +1167,12 @@
             container.classList.remove('hidden');
             qrReaderDiv.innerHTML = '';
 
-            if (!saleQrScanner) {
-                saleQrScanner = new Html5Qrcode("sale-qr-reader");
-            }
+            if (!saleQrScanner) saleQrScanner = new Html5Qrcode("sale-qr-reader");
             
             saleQrScanner.start(
-                { facingMode: "environment" },
-                { fps: 10, qrbox: { width: 250, height: 250 } },
+                { facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
                  (decodedText, decodedResult) => onScanSuccess(decodedText, 'sale'),
-                 (errorMessage) => onScanFailure(errorMessage)
+                 onScanFailure
             ).catch(err => {
                 console.error("Error iniciando escáner de ventas:", err);
                 showToast("Error al iniciar escáner QR (ventas): " + (err.message || err), "error");
@@ -1032,13 +1183,8 @@
         function stopSaleQRScanner() {
             const container = document.getElementById('saleQRScannerContainer');
             if (saleQrScanner && saleQrScanner.isScanning) { 
-                saleQrScanner.stop().then(() => {
-                    console.log("Escáner de ventas detenido.");
-                }).catch(err => {
-                    console.warn("Advertencia al detener escáner de ventas:", err);
-                }).finally(() => {
-                    container.classList.add('hidden');
-                });
+                saleQrScanner.stop().catch(err => console.warn("Advertencia al detener escáner de ventas:", err))
+                               .finally(() => container.classList.add('hidden'));
             } else {
                 container.classList.add('hidden');
             }
@@ -1049,40 +1195,37 @@
             stopSaleQRScanner();
         }
 
-        document.getElementById('scanProductQRSale').addEventListener('click', startSaleQRScanner);
-        document.getElementById('stopSaleQRScan').addEventListener('click', stopSaleQRScanner);
-
         // --- Financial Reports ---
         function calculateFinancials() {
-            const totalInventoryValue = localProducts.reduce((sum, product) => sum + (product.quantity * product.costPrice), 0);
+            const productsArray = Object.values(localProducts);
+            const totalInventoryValue = productsArray.reduce((sum, product) => sum + (product.quantity * product.costPrice), 0);
             document.getElementById('totalInventoryValue').textContent = `$${totalInventoryValue.toFixed(2)}`;
 
-            const totalGrossProfit = localSales.reduce((sum, sale) => sum + sale.totalProfit, 0);
+            const salesArray = Object.values(localSales);
+            const totalGrossProfit = salesArray.reduce((sum, sale) => sum + sale.totalProfit, 0);
             document.getElementById('totalGrossProfit').textContent = `$${totalGrossProfit.toFixed(2)}`;
         }
 
         // --- Import/Export Excel ---
-        document.getElementById('exportInventory').addEventListener('click', () => {
-            if (localProducts.length === 0) {
+        function exportInventoryHandler() {
+            const productsArray = Object.values(localProducts);
+            if (productsArray.length === 0) {
                 showToast("No hay productos para exportar.", "info");
                 return;
             }
-            const dataToExport = localProducts.map(p => ({
-                'QR_ID': p.id,
-                'Nombre': p.name,
-                'Cantidad': p.quantity,
-                'PrecioCosto': p.costPrice,
-                'PrecioVenta': p.salePrice,
-                'StockMinimo': p.minStock
+            const dataToExport = productsArray.map(p => ({
+                'QR_ID': p.id, 'Nombre': p.name, 'Cantidad': p.quantity,
+                'PrecioCosto': p.costPrice, 'PrecioVenta': p.salePrice, 'StockMinimo': p.minStock
             }));
             const worksheet = XLSX.utils.json_to_sheet(dataToExport);
             const workbook = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(workbook, worksheet, "Inventario");
-            XLSX.writeFile(workbook, "inventario_exportado_local.xlsx");
+            XLSX.writeFile(workbook, `inventario_firebase_${userId.substring(0,6)}.xlsx`);
             showToast("Inventario exportado con éxito.", "success");
-        });
+        }
 
-        document.getElementById('importInventory').addEventListener('click', () => {
+        async function importInventoryHandler() {
+            if (!productsRef) { showToast("Error: Referencia a productos no configurada.", "error"); return; }
             const fileInput = document.getElementById('importFile');
             if (fileInput.files.length === 0) {
                 showToast("Por favor, selecciona un archivo Excel para importar.", "warning");
@@ -1090,7 +1233,7 @@
             }
             const file = fileInput.files[0];
             const reader = new FileReader();
-            reader.onload = (event) => {
+            reader.onload = async (event) => {
                 try {
                     const data = new Uint8Array(event.target.result);
                     const workbook = XLSX.read(data, { type: 'array' });
@@ -1099,16 +1242,14 @@
                     const jsonData = XLSX.utils.sheet_to_json(worksheet);
                     
                     if (jsonData.length === 0) {
-                        showToast("El archivo Excel está vacío o no tiene datos.", "warning");
-                        return;
+                        showToast("El archivo Excel está vacío o no tiene datos.", "warning"); return;
                     }
 
-                    let productsAdded = 0;
-                    let productsUpdated = 0;
-                    let productsSkipped = 0;
+                    let productsAdded = 0, productsUpdated = 0, productsSkipped = 0;
+                    const updates = {}; // For batching Firebase updates
 
-                    jsonData.forEach(row => {
-                        const qrId = row['QR_ID'] ? String(row['QR_ID']).trim() : null; // Keep null if not provided
+                    for (const row of jsonData) {
+                        let qrId = row['QR_ID'] ? String(row['QR_ID']).trim() : null;
                         const name = String(row['Nombre'] || '').trim();
                         const quantity = parseInt(row['Cantidad']);
                         const costPrice = parseFloat(row['PrecioCosto']);
@@ -1116,82 +1257,128 @@
                         const minStock = parseInt(row['StockMinimo']) || 0;
 
                         if (!name || isNaN(quantity) || isNaN(costPrice) || isNaN(salePrice)) {
-                            console.warn(`Fila ignorada por datos incompletos o incorrectos: ${JSON.stringify(row)}`);
-                            productsSkipped++;
-                            return; // continue to next row
+                            console.warn(`Fila ignorada (datos incompletos/incorrectos): ${JSON.stringify(row)}`);
+                            productsSkipped++; continue;
                         }
                          if (costPrice > salePrice) {
-                            console.warn(`Fila ignorada para el producto "${name}": El precio de costo (${costPrice}) no puede ser mayor al precio de venta (${salePrice}).`);
+                            console.warn(`Fila ignorada para "${name}": Precio costo > Precio venta.`);
                             showToast(`Error en producto "${name}" del archivo: Precio costo > Precio venta. Fila ignorada.`, "warning");
-                            productsSkipped++;
-                            return; // continue to next row
+                            productsSkipped++; continue;
                         }
 
                         const productData = { name, quantity, costPrice, salePrice, minStock };
                         
-                        let existingProductIndex = -1;
-                        if (qrId) {
-                           existingProductIndex = localProducts.findIndex(p => p.id === qrId);
-                        }
-                        // If no QR ID provided or not found by QR ID, try to find by name (case-insensitive)
-                        if (existingProductIndex === -1) {
-                            existingProductIndex = localProducts.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
+                        let existingProduct = null;
+                        if (qrId && localProducts[qrId]) { // Found by QR ID
+                            existingProduct = localProducts[qrId];
+                        } else { // Try to find by name (case-insensitive) if QR not provided or not found
+                            const productsArray = Object.values(localProducts);
+                            existingProduct = productsArray.find(p => p.name.toLowerCase() === name.toLowerCase());
+                            if (existingProduct && !qrId) qrId = existingProduct.id; // Use existing ID if found by name
                         }
 
-
-                        if (existingProductIndex > -1) { // Update existing product
-                            const existingProductId = localProducts[existingProductIndex].id;
-                            localProducts[existingProductIndex] = { 
-                                ...localProducts[existingProductIndex], 
-                                ...productData,
-                                id: qrId || existingProductId // Use imported QR if provided and valid, else keep original
-                            };
-                            // If a new QR ID was provided and it's different from the original, ensure it's unique (excluding current product)
-                            if (qrId && qrId !== existingProductId && localProducts.some((p, idx) => p.id === qrId && idx !== existingProductIndex)) {
-                                showToast(`Conflicto de QR ID importado para "${name}". Se mantuvo el ID original.`, "warning");
-                                localProducts[existingProductIndex].id = existingProductId; // Revert to original ID
+                        if (existingProduct) { // Update
+                            productData.id = existingProduct.id; // Ensure ID is the original one
+                            // If a new QR was provided in Excel and it's different AND it conflicts with another product
+                            if (qrId && qrId !== existingProduct.id && localProducts[qrId]) {
+                                showToast(`Conflicto de QR ID "${qrId}" para "${name}". Se mantuvo el ID original "${existingProduct.id}".`, "warning");
+                            } else if (qrId && qrId !== existingProduct.id) { // QR ID changed and no conflict
+                                // This case is tricky: implies deleting old ID and creating new.
+                                // For simplicity, we'll update the existing record, if QR_ID field is meant to be mutable.
+                                // If QR_ID is immutable, this should be an error or handled differently.
+                                // Assuming QR_ID can be changed here if unique.
+                                updates[`${productsRef.key}/${existingProduct.id}`] = null; // Mark for deletion
+                                productData.id = qrId; // Set new ID
+                                updates[`${productsRef.key}/${qrId}`] = productData; // Add with new ID
+                            } else {
+                                updates[`${productsRef.key}/${existingProduct.id}`] = productData;
                             }
                             productsUpdated++;
-                        } else { // Add new product
+                        } else { // Add new
                             productData.id = qrId || crypto.randomUUID();
-                            // Ensure new QR ID (either from file or generated) is unique
-                            if (localProducts.some(p => p.id === productData.id)) {
+                            if (localProducts[productData.id]) { // Generated/Provided ID conflicts
                                 showToast(`QR ID "${productData.id}" para nuevo producto "${name}" ya existe. Generando uno nuevo.`, "warning");
-                                productData.id = crypto.randomUUID(); // Regenerate if conflict
+                                productData.id = crypto.randomUUID();
                             }
-                            localProducts.push(productData);
+                            updates[`${productsRef.key}/${productData.id}`] = productData;
                             productsAdded++;
                         }
-                    });
-
-                    if (productsAdded > 0 || productsUpdated > 0) {
-                        showToast(`${productsAdded} productos añadidos, ${productsUpdated} actualizados. ${productsSkipped > 0 ? productsSkipped + ' filas ignoradas.' : ''}`, "success");
-                        renderProducts();
-                        renderStores(); // In case new stores were implied or for consistency
-                        calculateFinancials();
+                    }
+                    
+                    if (Object.keys(updates).length > 0) {
+                        await update(ref(fbDb), updates); // Batch update/set/remove
+                        showToast(`${productsAdded} prod. añadidos, ${productsUpdated} actualizados. ${productsSkipped > 0 ? productsSkipped + ' filas ignoradas.' : ''}`, "success");
                     } else if (productsSkipped > 0 && jsonData.length === productsSkipped) {
-                         showToast("Todos los productos del archivo fueron ignorados debido a errores o datos faltantes.", "warning");
+                         showToast("Todos los productos del archivo fueron ignorados.", "warning");
+                    } else {
+                        showToast("No se procesaron nuevos productos del archivo.", "info");
                     }
-                    else {
-                        showToast("No se procesaron nuevos productos del archivo. Verifica el formato y los datos.", "info");
-                    }
-                    fileInput.value = ''; // Reset file input
+                    fileInput.value = '';
                 } catch (error) {
                     console.error("Error importando inventario:", error);
                     showToast("Error al importar inventario: " + error.message, "error");
                 }
             };
             reader.readAsArrayBuffer(file);
-        });
+        }
 
-        // --- Initial Data Load and Render ---
-        function loadInitialData() {
-            // Data is already in localProducts, localStores, localSales.
-            // Just need to render it.
-            renderProducts();
-            renderStores();
-            renderSalesHistory();
-            calculateFinancials();
+        // --- Initial Data Load from Firebase ---
+        function loadInitialDataFromFirebase() {
+            if (!userId || !productsRef || !storesRef || !salesRef) {
+                console.log("Firebase not ready or user not authenticated for initial load.");
+                loadingOverlay.textContent = "Esperando conexión con Firebase...";
+                // Don't hide loading overlay yet, wait for auth and refs.
+                return;
+            }
+            console.log("Starting initial data load from Firebase...");
+
+            let productsLoaded = false;
+            let storesLoaded = false;
+            let salesLoaded = false;
+
+            const checkAllDataLoaded = () => {
+                if (productsLoaded && storesLoaded && salesLoaded) {
+                    loadingOverlay.style.display = 'none'; // Hide loading overlay
+                    console.log("All initial data loaded.");
+                    showToast("Datos cargados desde Firebase.", "info");
+                }
+            };
+
+            onValue(productsRef, (snapshot) => {
+                const data = snapshot.val();
+                renderProducts(data); // data will be null if no products, or an object
+                productsLoaded = true;
+                checkAllDataLoaded();
+                console.log("Products loaded/updated from Firebase:", data);
+            }, (error) => {
+                console.error("Error cargando productos:", error);
+                showToast("Error al cargar productos: " + error.message, "error");
+                productsLoaded = true; checkAllDataLoaded(); // Still mark as "loaded" to potentially hide overlay
+            });
+
+            onValue(storesRef, (snapshot) => {
+                const data = snapshot.val();
+                renderStores(data);
+                storesLoaded = true;
+                checkAllDataLoaded();
+                console.log("Stores loaded/updated from Firebase:", data);
+            }, (error) => {
+                console.error("Error cargando tiendas:", error);
+                showToast("Error al cargar tiendas: " + error.message, "error");
+                storesLoaded = true; checkAllDataLoaded();
+            });
+
+            onValue(salesRef, (snapshot) => {
+                const data = snapshot.val();
+                renderSalesHistory(data);
+                salesLoaded = true;
+                checkAllDataLoaded();
+                console.log("Sales loaded/updated from Firebase:", data);
+            }, (error) => {
+                console.error("Error cargando historial de ventas:", error);
+                showToast("Error al cargar ventas: " + error.message, "error");
+                salesLoaded = true; checkAllDataLoaded();
+            });
         }
 
     </script>
